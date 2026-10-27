@@ -500,3 +500,20 @@ fn an_image_inside_a_link_stays_black_and_underlined() {
     }
     assert_eq!(buf.cell((pad + 12, 0)).expect("cell").style().fg, Some(Color::Blue), "a word link is blue");
 }
+
+#[test]
+fn a_linked_heading_keeps_its_colour_and_gains_the_underline() {
+    let html = "<h2><a href=\"/x\">chapter one</a></h2><p><a href=\"/y\">plain</a></p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
+    app.view.cursor.row = 4;
+    let buf = draw_buffer(&app, 40, 8);
+    let pad = app.padding_x() as u16;
+    let head = buf.cell((pad + 1, 0)).expect("cell").style();
+    assert_eq!(head.fg, app.theme.heading.fg, "the heading keeps the heading colour");
+    assert!(head.add_modifier.contains(Modifier::UNDERLINED), "the link shows as an underline");
+    assert_eq!(
+        buf.cell((pad, 2)).expect("cell").style().fg,
+        app.theme.link.fg,
+        "a word link is link-coloured"
+    );
+}

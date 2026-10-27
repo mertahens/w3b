@@ -40,6 +40,8 @@ mail link and a anchor.
   painted with `[style.image]` (black on purple), and stay black-and-underlined
   inside a link thanks to `[style.linked_image]`. Links that point at a `data:` or
   `javascript:` payload are plain text, never link targets.
+* A **link that is a heading** keeps the heading's own colours and only gains the
+  link underline, so `<h2><a href=...>` still reads as a heading.
 * The **status line** at the bottom shows `[status]  url — title  time  percent`
   - the load time can be switched off with `show_load_time = false`. Status comes
   from the HTTP status code (`200 OK`, `404 NOT FOUND`) or a braille spinner and

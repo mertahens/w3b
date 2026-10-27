@@ -65,6 +65,11 @@ fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
         let visited = app.visited.contains(app.page.links[index].href.as_str())
             || matches!(&app.page.links[index].follow, crate::page::Follow::Url(url) if app.visited.contains(url.as_str()));
         out = out.patch(if visited { app.theme.visited } else { app.theme.link });
+        if style.heading {
+            // A heading that happens to be a link keeps the heading's colours; all
+            // the link contributes is its underline.
+            out = out.patch(app.theme.heading);
+        }
     }
     if style.image && link.is_some() {
         // A linked image keeps the placeholder's own colours: black ink on the
