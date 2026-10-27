@@ -201,8 +201,10 @@ def main() -> int:
             problems.append(f"never rendered {needle!r}")
     # The monospace background is the dark grey from the shipped config, and it
     # covers the text rather than the whole line.
-    if b"48;2;85;85;85" not in raw:
-        problems.append("no dark grey (rgb 85,85,85) background was painted")
+    if b"48;2;20;20;20" not in raw:
+        problems.append("no dark (rgb 20,20,20) monospace background was painted")
+    if b"38;2;245;245;245" not in raw:
+        problems.append("monospace text was not painted in the bright ink")
     # w3b must not flash an error page on its way to the first frame.
     if b"ERROR" in plain:
         problems.append("an ERROR page was painted at some point")

@@ -32,11 +32,6 @@ w3b keys  (i or ? toggles this)
 /// Compose the style for one run: semantic flags, never page colors.
 fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
     let mut out = app.theme.text;
-    if style.mono {
-        // Monospace asks for a font, and w3b marks it with a dark background
-        // over the text itself - never the whole line.
-        out = out.patch(app.theme.monospace);
-    }
     if style.code {
         out = out.patch(app.theme.code);
     }
@@ -59,6 +54,12 @@ fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
     }
     if style.italic {
         out = out.patch(app.theme.emphasis);
+    }
+    if style.mono {
+        // Monospace asks for a font, and w3b marks it with a dark slab and
+        // light text over the text itself - never the whole line.  Applied
+        // last of the text styles so it wins over the colour for <code>.
+        out = out.patch(app.theme.monospace);
     }
     if let Some(index) = link {
         let visited = app.visited.contains(app.page.links[index].href.as_str())

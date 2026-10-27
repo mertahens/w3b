@@ -126,7 +126,7 @@ muted = { fg = "dark_gray" }
 divider = { fg = "dark_gray" }
 placeholder = { fg = "dark_gray", italic = true }
 image = { fg = "black", bg = "magenta", italic = true }
-monospace = { bg = "#555555" }
+monospace = { fg = "#f5f5f5", bg = "#141414" }
 hovered_link = { fg = "black", bg = "gray", underline = true }
 cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
@@ -199,7 +199,8 @@ come from the stylesheet, and they are taken while parsing:
 * **Is this text monospace?** `font-family: monospace` (or a family named after
   one: Courier, Menlo, JetBrains Mono, ...) marks the element; so do the tags the
   browser already draws monospaced (`code`, `pre`, `kbd`, `samp`, `tt`,
-  `textarea`). `[style.monospace]` is painted over that text only - the rest of
+  `textarea`). `[style.monospace]` is painted over that text only - a dark slab
+  with bright ink, and it outranks the colour set for `code` - the rest of
   the line, and the lines around it, are left alone.
 
 Everything else in CSS — colours, sizes, positioning, `float`, `grid` — is

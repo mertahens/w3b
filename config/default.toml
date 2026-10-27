@@ -44,14 +44,14 @@ fg = "dark_gray"
 fg = "yellow"
 italic = true
 
-# Image placeholders, rendered as [alt text].
-# Elements that ask for a monospace font (code, pre, kbd, or CSS
-# font-family: monospace). The background spans the whole line.
 # Elements that ask for a monospace font (code, pre, kbd, a monospace
-# font-family). The background covers the text itself, not the whole line.
+# font-family). The colours cover the text itself, not the whole line: a dark
+# slab with light text, so code stands out from the prose around it.
 [style.monospace]
-bg = "#555555"
+fg = "#f5f5f5"
+bg = "#141414"
 
+# Image placeholders, rendered as [img: alt].
 [style.image]
 fg = "black"
 bg = "magenta"

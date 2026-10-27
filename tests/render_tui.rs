@@ -259,17 +259,21 @@ fn search_matches_are_highlighted() {
 }
 
 #[test]
-fn monospace_greys_its_text_and_nothing_else() {
+fn monospace_sits_on_a_dark_slab_with_bright_text() {
     let html = "<p>plain <code>ls -l</code></p>";
     let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
     app.view.cursor.row = 3;
     let buf = draw_buffer(&app, 40, 8);
     let pad = app.padding_x() as u16;
 
-    let grey = app.theme.monospace.bg;
-    assert_eq!(grey, Some(Color::Rgb(0x55, 0x55, 0x55)), "the shipped mono colour is a dark grey");
-    // The code text sits on the grey, starting where `ls` begins ("plain " is 6).
-    assert_eq!(buf.cell((pad + 6, 0)).expect("cell").style().bg, grey, "the mono run is shaded");
+    let slab = app.theme.monospace.bg;
+    let ink = app.theme.monospace.fg;
+    assert_eq!(slab, Some(Color::Rgb(0x14, 0x14, 0x14)), "the mono background is dark");
+    assert_eq!(ink, Some(Color::Rgb(0xf5, 0xf5, 0xf5)), "the mono text is bright");
+    // The code text sits on the slab, starting where `ls` begins ("plain " is 6).
+    let code = buf.cell((pad + 6, 0)).expect("cell").style();
+    assert_eq!(code.bg, slab, "the mono run is shaded");
+    assert_eq!(code.fg, ink, "and its text is bright, not the <code> colour");
     assert_eq!(buf.cell((pad, 0)).expect("cell").style().bg, Some(Color::Reset), "plain words are not");
     // The line is not painted: nothing past the text, and no row below it.
     assert_eq!(
@@ -280,7 +284,7 @@ fn monospace_greys_its_text_and_nothing_else() {
     assert_eq!(
         buf.cell((pad, 1)).expect("cell").style().bg,
         Some(Color::Reset),
-        "no grey on the empty row below"
+        "no shading on the empty row below"
     );
 }
 
