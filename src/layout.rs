@@ -211,7 +211,23 @@ fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: Stri
     let mut row = Row { runs: vec![indent_run.clone()], width: prefix.width() };
     let mut col = prefix.width();
 
+    let mut after_break = false;
     for piece in &block.pieces {
+        if piece.hard_break {
+            // A <br> ends the line but not the block: the next run starts on the
+            // following row with no empty line between them. Two breaks in a row
+            // leave an empty line between them, which is what a browser draws.
+            if row.runs.iter().any(|r| !r.text.trim().is_empty()) {
+                trim_and_push(out, std::mem::take(&mut row));
+            } else {
+                out.rows.push(Row::default());
+            }
+            row = Row { runs: vec![cont_run.clone()], width: cont.width() };
+            col = cont.width();
+            after_break = true;
+            continue;
+        }
+        after_break = false;
         let style = style_of(piece, matches!(block.kind, BlockKind::Heading(_)));
         let text = expand_tabs(&piece.text, opts.tab_width);
         for token in tokens_for(text, piece.field.is_some()) {
@@ -260,6 +276,11 @@ fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: Stri
                 Run { text: token.text, start: col, style, link: piece.link, field: piece.field },
             );
         }
+    }
+    // A break at the very end of a block leaves an empty row behind; the block
+    // separation that follows already provides the space.
+    if after_break && row.runs.iter().all(|r| r.text.trim().is_empty()) {
+        return;
     }
     trim_and_push(out, row);
 }
@@ -575,10 +596,39 @@ fn fit_columns(natural: &[usize], avail: usize) -> Vec<usize> {
 
 /// Cell content wrapped to `width` lines, keeping per-piece styles and links.
 fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
-    let mut tokens: Vec<(String, CellStyle, Option<usize>, Option<usize>)> = Vec::new();
+    // A <br> inside a cell breaks the line inside the cell, so the cell's pieces
+    // are wrapped one group at a time.
+    let mut groups: Vec<Vec<crate::dom::Piece>> = vec![Vec::new()];
     for piece in &cell.pieces {
+        if piece.hard_break {
+            groups.push(Vec::new());
+        } else {
+            groups.last_mut().unwrap().push(piece.clone());
+        }
+    }
+    let mut lines = Vec::new();
+    for (i, group) in groups.iter().enumerate() {
+        let group_lines = wrap_cell_lines(group, cell.header, width);
+        if group_lines.is_empty() {
+            // A break with nothing on it: an empty line, unless it trails the cell.
+            if i + 1 < groups.len() {
+                lines.push(Vec::new());
+            }
+            continue;
+        }
+        lines.extend(group_lines);
+    }
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
+fn wrap_cell_lines(pieces: &[crate::dom::Piece], header: bool, width: usize) -> Vec<Vec<Run>> {
+    let mut tokens: Vec<(String, CellStyle, Option<usize>, Option<usize>)> = Vec::new();
+    for piece in pieces {
         let mut style = style_of(piece, false);
-        if cell.header {
+        if header {
             style.bold = true;
         }
         for token in tokens_for(piece.text.clone(), piece.field.is_some()) {
@@ -640,9 +690,6 @@ fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
             l.pop();
         }
     }
-    if lines.is_empty() {
-        lines.push(Vec::new());
-    }
     lines
 }
 
@@ -662,6 +709,7 @@ fn table_fallback(out: &mut Layout, table: &crate::dom::Table, indent: usize, op
                     muted: true,
                     image: false,
                     field: None,
+                    hard_break: false,
                 });
             }
             pieces.extend(cell.pieces.iter().cloned());
@@ -700,5 +748,29 @@ mod tests {
         let placed = out.rows.iter().filter(|r| r.runs.iter().any(|run| run.field.is_some())).count();
         assert_eq!(placed, 1, "the field must not be split across rows");
         assert!(out.field_end(0).is_some());
+    }
+
+    #[test]
+    fn a_break_ends_the_line_without_an_empty_one() {
+        let doc = dom::parse("<p>one<br>two</p><p>next</p>");
+        let laid = layout(&doc, 40, 4, true);
+        let rows: Vec<String> = (0..laid.rows.len()).map(|r| row_text(&laid, r)).collect();
+        assert_eq!(rows, vec!["one", "two", "", "next"], "{rows:?}");
+    }
+
+    #[test]
+    fn two_breaks_leave_one_empty_line() {
+        let doc = dom::parse("<p>one<br><br>two</p>");
+        let laid = layout(&doc, 40, 4, true);
+        let rows: Vec<String> = (0..laid.rows.len()).map(|r| row_text(&laid, r)).collect();
+        assert_eq!(rows, vec!["one", "", "two"], "{rows:?}");
+    }
+
+    #[test]
+    fn a_break_at_the_end_of_a_block_adds_nothing() {
+        let doc = dom::parse("<p>a<br></p><div>d</div>");
+        let laid = layout(&doc, 40, 4, true);
+        let rows: Vec<String> = (0..laid.rows.len()).map(|r| row_text(&laid, r)).collect();
+        assert_eq!(rows, vec!["a", "", "d"], "{rows:?}");
     }
 }

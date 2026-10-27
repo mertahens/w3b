@@ -29,6 +29,10 @@ mail link and a anchor.
 * **Tables** are drawn as box-drawing grids (`┌─┬┐ │ ├┼┤ └┴┘`) with the header
   rule, wrapped cells and `align` respected; when the terminal is too narrow for
   a grid they fall back to one line per row.
+* **Line breaks** follow the elements: a block (`div`, `p`, `h1`, …) ends a line
+  and adds an empty one, an inline element (`span`, `a`, `b`, `code`, …) never
+  starts or ends a line by itself, and `<br>` breaks the line inside its block
+  with no empty line. Two `<br>` in a row leave one blank line between them.
 * **Images** are never fetched or drawn. They leave an `[img: alt]` label (the
   file name when there is no alt text) painted with `[style.image]`: black on
   purple by default.

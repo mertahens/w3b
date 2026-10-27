@@ -289,6 +289,7 @@ fn piece() -> Piece {
         muted: false,
         field: None,
         image: false,
+        hard_break: false,
     }
 }
 

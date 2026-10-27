@@ -35,6 +35,9 @@ pub struct Piece {
     pub image: bool,
     /// Index into `Doc::fields`: the user can type into this piece.
     pub field: Option<usize>,
+    /// A `<br>`: this piece ends the line it sits on and the text after it
+    /// continues in the same block, so no blank line is inserted.
+    pub hard_break: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,7 +329,7 @@ impl Builder {
                 self.flush();
                 self.push_block(Block { kind: BlockKind::Divider, indent: self.indent, pieces: vec![] });
             }
-            "br" => self.flush(),
+            "br" => self.push_break(),
             "pre" => {
                 self.flush();
                 self.pre = true;
@@ -587,7 +590,16 @@ impl Builder {
             muted: ctx.muted,
             image: ctx.image,
             field: ctx.field,
+            hard_break: false,
         });
+    }
+
+    /// `<br>` breaks the line inside the current block: it adds a break piece to
+    /// the text being collected rather than closing the block, which is what keeps
+    /// a single break from inserting a whole empty line.
+    fn push_break(&mut self) {
+        self.ws = false;
+        self.cur.push(Piece { hard_break: true, ..plain(self.ctx) });
     }
 
     fn flush(&mut self) {
@@ -648,6 +660,7 @@ fn plain(ctx: Ctx) -> Piece {
         muted: ctx.muted,
         image: ctx.image,
         field: ctx.field,
+        hard_break: false,
     }
 }
 
@@ -1049,5 +1062,12 @@ mod tests {
         let text: String = doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
         assert!(!text.contains("gone") && !text.contains("deeper"), "hidden text survived: {text:?}");
         assert!(text.contains("printed") && text.contains("keep"), "screen text was dropped: {text:?}");
+    }
+
+    #[test]
+    fn br_stays_inside_the_block_it_is_written_in() {
+        let doc = parse("<p>one<br>two</p>");
+        assert_eq!(doc.blocks.len(), 1, "a <br> must not start a new block: {doc:?}");
+        assert!(doc.blocks[0].pieces.iter().any(|p| p.hard_break), "no break piece: {doc:?}");
     }
 }
