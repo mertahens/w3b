@@ -71,6 +71,8 @@ pub struct StyleConfig {
     pub border: StyleSpec,
     /// Image placeholders such as `[alt text]`.
     pub image: StyleSpec,
+    /// An image placeholder inside a link.
+    pub linked_image: StyleSpec,
     /// Elements that ask for a monospace font, marked over the text itself.
     pub monospace: StyleSpec,
     /// The link the cursor is standing on.

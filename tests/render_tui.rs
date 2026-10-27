@@ -483,3 +483,20 @@ fn the_shipped_hover_paints_the_link_colour_behind_black_ink() {
     assert_eq!(app.theme.hovered_link.bg, app.theme.link.fg, "hover moves that blue to the background");
     assert_eq!(app.theme.hovered_link.fg, Some(Color::Black), "and the ink goes black");
 }
+
+#[test]
+fn an_image_inside_a_link_stays_black_and_underlined() {
+    let html = "<p><a href=\"/x\"><img src=\"a.png\" alt=\"logo\"></a> <a href=\"/y\">word</a></p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
+    app.view.cursor.row = 3;
+    let buf = draw_buffer(&app, 40, 8);
+    let pad = app.padding_x() as u16;
+    assert_eq!(buf.cell((pad, 0)).expect("cell").symbol(), "[", "the label starts the row");
+    for x in pad..pad + 11 {
+        let style = buf.cell((x, 0)).expect("cell").style();
+        assert_eq!(style.fg, Some(Color::Black), "the image label keeps black ink");
+        assert_eq!(style.bg, Some(Color::Magenta), "on the image background");
+        assert!(style.add_modifier.contains(Modifier::UNDERLINED), "and takes the link underline");
+    }
+    assert_eq!(buf.cell((pad + 12, 0)).expect("cell").style().fg, Some(Color::Blue), "a word link is blue");
+}

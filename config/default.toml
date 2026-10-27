@@ -51,11 +51,17 @@ italic = true
 fg = "#d0d0d0"
 bg = "#141414"
 
-# Image placeholders, rendered as [img: alt].
+# Image placeholders, labelled with whatever the image says about itself.
 [style.image]
 fg = "black"
 bg = "magenta"
 italic = true
+
+# The same placeholder inside a link: it stays black ink, only underlined, rather
+# than turning link-blue.
+[style.linked_image]
+fg = "black"
+underline = true
 
 # The link the cursor is standing on, drawn under the cursor cell.
 # The link under the cursor: the link colour moves from the ink to the background.

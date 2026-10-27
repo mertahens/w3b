@@ -33,9 +33,13 @@ mail link and a anchor.
   and adds an empty one, an inline element (`span`, `a`, `b`, `code`, …) never
   starts or ends a line by itself, and `<br>` breaks the line inside its block
   with no empty line. Two `<br>` in a row leave one blank line between them.
-* **Images** are never fetched or drawn. They leave an `[img: alt]` label (the
-  file name when there is no alt text) painted with `[style.image]`: black on
-  purple by default.
+* **Images** are never fetched or drawn. They leave an `[img: …]` label holding
+  whatever the image says about itself: `alt`, else `title`, else `aria-label`,
+  else the file name from `src`. An image that says nothing is left off the page —
+  a decorative `alt=""`, or a base64 `data:` source with no name. Labels are
+  painted with `[style.image]` (black on purple), and stay black-and-underlined
+  inside a link thanks to `[style.linked_image]`. Links that point at a `data:` or
+  `javascript:` payload are plain text, never link targets.
 * The **status line** at the bottom shows `[status]  url — title  time  percent`
   - the load time can be switched off with `show_load_time = false`. Status comes
   from the HTTP status code (`200 OK`, `404 NOT FOUND`) or a braille spinner and
@@ -133,6 +137,7 @@ muted = { fg = "dark_gray" }
 divider = { fg = "dark_gray" }
 placeholder = { fg = "dark_gray", italic = true }
 image = { fg = "black", bg = "magenta", italic = true }
+linked_image = { fg = "black", underline = true }
 monospace = { fg = "#d0d0d0", bg = "#141414" }
 hovered_link = { fg = "black", bg = "blue" }
 cursor = { bg = "yellow", fg = "black", bold = true }

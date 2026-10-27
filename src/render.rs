@@ -66,6 +66,11 @@ fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
             || matches!(&app.page.links[index].follow, crate::page::Follow::Url(url) if app.visited.contains(url.as_str()));
         out = out.patch(if visited { app.theme.visited } else { app.theme.link });
     }
+    if style.image && link.is_some() {
+        // A linked image keeps the placeholder's own colours: black ink on the
+        // image background, with the underline from the link and none of its blue.
+        out = out.patch(app.theme.linked_image);
+    }
     out
 }
 

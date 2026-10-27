@@ -355,27 +355,13 @@ impl Builder {
                 self.pending_block = Some(kind);
             }
             "img" => {
-                // `[img: alt]`, falling back to the file name so an image
-                // without alt text still says what it is.
+                // A label made of whatever the image says about itself; an image
+                // that says nothing is left off the page entirely.
                 let el = match node.value().as_element() {
                     Some(el) => el,
                     None => return,
                 };
-                let alt = el.attr("alt").unwrap_or("").trim();
-                let label = if alt.is_empty() {
-                    el.attr("src")
-                        .unwrap_or("")
-                        .split('?')
-                        .next()
-                        .unwrap_or("")
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or("")
-                        .to_string()
-                } else {
-                    alt.to_string()
-                };
-                let label = collapse(&label);
+                let label = collapse(&image_label(el));
                 if !label.is_empty() {
                     self.push_piece(format!("[img: {label}]"), |c| c.image = true);
                 }
@@ -514,7 +500,12 @@ impl Builder {
 
     fn enter_link(&mut self, node: NodeRef<'_, Node>) {
         let href = node.value().as_element().and_then(|e| e.attr("href")).unwrap_or("").trim().to_string();
-        if href.is_empty() {
+        // A `data:` payload is a base64 blob, not somewhere a reader can go, and a
+        // `javascript:` handler is not a destination either: both stay plain text.
+        if href.is_empty()
+            || href.get(..5).is_some_and(|h| h.eq_ignore_ascii_case("data:"))
+            || href.get(..11).is_some_and(|h| h.eq_ignore_ascii_case("javascript:"))
+        {
             return;
         }
         let index = self.doc.links.len();
@@ -681,6 +672,27 @@ fn collapse(text: &str) -> String {
 /// The controls w3b lets the user type into. Everything else (checkboxes,
 /// radios, buttons, selects, file pickers) keeps its static label, because w3b
 /// does not submit forms.
+/// The text an image placeholder carries: alt text, otherwise the title,
+/// otherwise aria-label, otherwise the file name from src. Empty means the image
+/// has nothing to say - an explicit `alt=""`, or a base64 `data:` source with no
+/// name to show - and such an image is left out of the page.
+fn image_label(el: &scraper::node::Element) -> String {
+    for name in ["alt", "title", "aria-label"] {
+        let value = el.attr(name).unwrap_or("").trim();
+        if !value.is_empty() {
+            return value.to_string();
+        }
+        if name == "alt" && el.attr("alt").is_some() {
+            return String::new(); // alt="" is the author saying: no information here
+        }
+    }
+    let src = el.attr("src").unwrap_or("").trim();
+    if src.is_empty() || src.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:")) {
+        return String::new();
+    }
+    src.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()
+}
+
 fn field_of(node: NodeRef<'_, Node>) -> Option<Field> {
     let el = node.value().as_element()?;
     if !matches!(el.name(), "input" | "textarea") {
@@ -1069,5 +1081,38 @@ mod tests {
         let doc = parse("<p>one<br>two</p>");
         assert_eq!(doc.blocks.len(), 1, "a <br> must not start a new block: {doc:?}");
         assert!(doc.blocks[0].pieces.iter().any(|p| p.hard_break), "no break piece: {doc:?}");
+    }
+
+    #[test]
+    fn an_image_that_says_nothing_is_left_out() {
+        let labels = |html: &str| -> Vec<String> {
+            let doc = parse(html);
+            doc.blocks
+                .iter()
+                .flat_map(|b| b.pieces.iter().filter(|p| p.image).map(|p| p.text.clone()))
+                .collect()
+        };
+        assert_eq!(labels("<img src=\"a.png\" alt=\"logo\">"), vec!["[img: logo]"]);
+        assert_eq!(labels("<img src=\"a.png\" title=\"the title\">"), vec!["[img: the title]"]);
+        assert_eq!(labels("<img src=\"a.png\" aria-label=\"aria\">"), vec!["[img: aria]"]);
+        assert_eq!(labels("<img src=\"/img/logo.png?v=2#x\">"), vec!["[img: logo.png]"]);
+        // alt="" is the author saying the image carries no information.
+        assert!(labels("<img src=\"decorative.png\" alt=\"\">").is_empty(), "a decorative image was shown");
+        // A base64 payload has no name to show.
+        assert!(
+            labels("<img src=\"data:image/png;base64,iVBORw0KGgo=\">").is_empty(),
+            "a base64 image was shown"
+        );
+    }
+
+    #[test]
+    fn base64_and_javascript_targets_stay_plain_text() {
+        let doc = parse(
+            "<a href=\"data:text/html;base64,AAAA\">blob</a><a href=\"javascript:void(0)\">click</a><a href=\"/real\">real</a>",
+        );
+        let hrefs: Vec<&str> = doc.links.iter().map(|l| l.href.as_str()).collect();
+        assert_eq!(hrefs, vec!["/real"], "only the real target is a link");
+        let all: String = doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
+        assert!(all.contains("blob") && all.contains("click"), "the text is still read: {all}");
     }
 }

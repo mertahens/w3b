@@ -31,6 +31,7 @@ pub struct Theme {
     pub scrollbar: Style,
     pub border: Style,
     pub image: Style,
+    pub linked_image: Style,
     pub hovered_link: Style,
     pub status: StatusTheme,
 }
@@ -98,6 +99,7 @@ impl Theme {
             scrollbar: spec(&c.scrollbar, "scrollbar")?,
             border: spec(&c.border, "border")?,
             image: spec(&c.image, "image")?,
+            linked_image: spec(&c.linked_image, "linked_image")?,
             hovered_link: spec(&c.hovered_link, "hovered_link")?,
             status: StatusTheme {
                 base: spec(&st.base_spec(), "status")?,
