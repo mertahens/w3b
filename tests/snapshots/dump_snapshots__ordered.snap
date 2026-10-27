@@ -1,0 +1,6 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(\"<ol><li>alpha</li><li>beta</li></ol>\", 30)"
+---
+1. alpha
+2. beta

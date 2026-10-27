@@ -1,0 +1,6 @@
+---
+source: tests/dump_snapshots.rs
+expression: "w3b::dump::plain_text(&laid)"
+---
+click the very long link
+label that wraps now

@@ -1,0 +1,20 @@
+---
+source: tests/render_tui.rs
+expression: "draw(&app, 62, 16)"
+---
+ Design notes
+
+ Some bold and italic text with a second page link, plus a
+ mail link and a anchor.
+
+ • first item
+ • second item that is quite long and should wrap around the
+   terminal width nicely
+
+ Code
+
+   fn main() {
+       println!("hello");
+   }
+
+ 200 OK  https://test.local/home — Design notes - w3b       0%

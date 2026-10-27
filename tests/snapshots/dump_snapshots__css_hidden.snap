@@ -1,0 +1,7 @@
+---
+source: tests/dump_snapshots.rs
+expression: "render_html_css(html, \"nav, .ad { display: none }\", 30)"
+---
+title
+
+content

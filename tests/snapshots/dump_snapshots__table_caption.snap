@@ -1,0 +1,13 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(html, 40)"
+---
+Sizes
+
+┌───────┐
+│ inner │
+└───────┘
+
+┌───────┬───┐
+│ small │   │
+└───────┴───┘

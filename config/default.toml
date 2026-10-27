@@ -1,0 +1,160 @@
+# w3b configuration.
+#
+# Colors accept: terminal names (black red green yellow blue magenta cyan gray
+# dark_gray light_red ... ), an indexed color ("0".."255"), a hex color
+# ("#1e1e2e"), or "default" / "reset" / "none" for the terminal default.
+#
+# Every style block takes: fg, bg, bold, italic, underline, reverse, dim.
+# The page's own CSS colors are never read - all colors here.
+
+[style]
+
+# --- page content ---------------------------------------------------------
+[style.text]
+fg = "default"
+
+[style.link]
+fg = "blue"
+underline = true
+
+[style.visited]
+fg = "magenta"
+underline = true
+
+[style.heading]
+fg = "light_green"
+bold = true
+
+[style.strong]
+bold = true
+
+[style.emphasis]
+italic = true
+
+[style.code]
+fg = "green"
+
+[style.muted]
+fg = "dark_gray"
+
+[style.divider]
+fg = "dark_gray"
+
+[style.placeholder]
+fg = "yellow"
+italic = true
+
+# Image placeholders, rendered as [alt text].
+# Elements that ask for a monospace font (code, pre, kbd, or CSS
+# font-family: monospace). The background spans the whole line.
+[style.monospace]
+bg = "gray"
+
+[style.image]
+fg = "black"
+bg = "magenta"
+italic = true
+
+# The link the cursor is standing on, drawn under the cursor cell.
+[style.hovered_link]
+fg = "black"
+bg = "gray"
+underline = true
+
+# --- cursor ---------------------------------------------------------------
+# cursor_line tints the whole row the cursor sits on; cursor is the cell.
+[style.cursor_line]
+bg = "#2b2b3b"
+
+[style.cursor]
+bg = "yellow"
+fg = "black"
+bold = true
+
+# --- search / prompts -----------------------------------------------------
+[style.search_match]
+bg = "yellow"
+fg = "black"
+
+[style.prompt]
+fg = "default"
+
+[style.message]
+fg = "cyan"
+
+# --- status line ----------------------------------------------------------
+[style.status]
+fg = "black"
+bg = "dark_gray"
+
+[style.status.loading]
+fg = "black"
+bg = "yellow"
+
+[style.status.ok]
+fg = "black"
+bg = "green"
+
+[style.status.redirect]
+fg = "black"
+bg = "cyan"
+
+[style.status.client_error]
+fg = "white"
+bg = "red"
+
+[style.status.server_error]
+fg = "white"
+bg = "light_red"
+
+[style.status.error]
+fg = "white"
+bg = "red"
+bold = true
+
+# Exact status codes win over the class above.
+[style.status.codes."404"]
+fg = "white"
+bg = "magenta"
+
+# --- status line segments -------------------------------------------------
+[style.url]
+fg = "default"
+bold = true
+
+[style.title]
+fg = "default"
+
+[style.position]
+fg = "default"
+bold = true
+
+[style.scrollbar]
+fg = "dark_gray"
+
+[style.border]
+fg = "dark_gray"
+
+[behavior]
+home_url = "https://example.com"
+user_agent = "w3b/0.1 (text mode browser)"
+timeout_secs = 15
+max_redirects = 10
+max_response_bytes = 8388608
+scroll_margin = 3
+tab_width = 4
+wrap = true
+show_title_in_status = true
+show_scrollbar = false
+mouse = true
+case_insensitive_search = true
+history_size = 200
+# Blank columns kept between the terminal edge and the page text.
+page_padding_x = 1
+# Copy a yanked link to the terminal clipboard with an OSC 52 escape.
+yank_to_clipboard = true
+
+# Embedded and linked stylesheets are applied: display: none and visibility:
+# hidden drop elements, font-family: monospace marks code. This caps how many
+# linked sheets are fetched. 0 fetches none.
+max_stylesheets = 4

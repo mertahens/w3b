@@ -1,0 +1,9 @@
+---
+source: tests/dump_snapshots.rs
+expression: "render_html_css(html, \".hide { display: none }\", 40)"
+---
+┌──────┬───────┐
+│ tool │ stars │
+├──────┼───────┤
+│ w3b  │       │
+└──────┴───────┘

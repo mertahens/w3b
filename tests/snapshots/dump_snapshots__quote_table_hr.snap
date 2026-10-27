@@ -1,0 +1,14 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(html, 36)"
+---
+  quoted text that is long enough to
+  wrap around
+
+────────────────────────────────────
+
+┌───┬───┐
+│ a │ b │
+├───┼───┤
+│ c │ d │
+└───┴───┘

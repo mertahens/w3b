@@ -1,0 +1,22 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(&article, 60)"
+---
+Design notes
+
+Some bold and italic text with a second page link, plus a
+mail link and a anchor.
+
+• first item
+• second item that is quite long and should wrap around the
+  terminal width nicely
+
+Code
+
+  fn main() {
+      println!("hello");
+  }
+
+────────────────────────────────────────────────────────────
+
+weird spacing here

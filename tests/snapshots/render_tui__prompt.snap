@@ -1,0 +1,12 @@
+---
+source: tests/render_tui.rs
+expression: screen
+---
+ x
+
+
+
+
+
+:open example.com/path
+ 200 OK  https://test.local/home — home                 100%

@@ -1,0 +1,7 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(&second, 60)"
+---
+Page two
+
+Back home.

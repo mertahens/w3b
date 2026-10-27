@@ -1,0 +1,7 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(html, 40)"
+---
+  fn main() {
+      println!("hi");
+  }
