@@ -48,7 +48,7 @@ italic = true
 # font-family). The colours cover the text itself, not the whole line: a dark
 # slab with light text, so code stands out from the prose around it.
 [style.monospace]
-fg = "#f5f5f5"
+fg = "#d0d0d0"
 bg = "#141414"
 
 # Image placeholders, rendered as [img: alt].

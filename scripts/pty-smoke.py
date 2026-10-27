@@ -206,7 +206,7 @@ def main() -> int:
     # covers the text rather than the whole line.
     if b"48;2;20;20;20" not in raw:
         problems.append("no dark (rgb 20,20,20) monospace background was painted")
-    if b"38;2;245;245;245" not in raw:
+    if b"38;2;208;208;208" not in raw:
         problems.append("monospace text was not painted in the bright ink")
     # w3b must not flash an error page on its way to the first frame.
     if b"ERROR" in plain:

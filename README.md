@@ -133,7 +133,7 @@ muted = { fg = "dark_gray" }
 divider = { fg = "dark_gray" }
 placeholder = { fg = "dark_gray", italic = true }
 image = { fg = "black", bg = "magenta", italic = true }
-monospace = { fg = "#f5f5f5", bg = "#141414" }
+monospace = { fg = "#d0d0d0", bg = "#141414" }
 hovered_link = { fg = "black", bg = "blue" }
 cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
