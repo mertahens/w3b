@@ -131,7 +131,8 @@ pub fn parse(css: &str) -> Sheet {
         pos += 1;
         match c {
             '{' => {
-                let head = std::mem::take(&mut prelude);
+                let head_owned = std::mem::take(&mut prelude);
+                let head = head_owned.trim();
                 let mut body = String::new();
                 let mut depth = 1usize;
                 while pos < chars.len() {
@@ -154,7 +155,19 @@ pub fn parse(css: &str) -> Sheet {
                 }
                 // A block left open at the end of the sheet is dropped, which is
                 // what a browser does with it too.
-                add_block(&mut sheet, head.trim(), &body);
+                if let Some(query) = head.strip_prefix("@media") {
+                    // Rules of a media block that applies join the sheet, in
+                    // order, so a later plain rule still wins a tie.  `@media
+                    // print`, an unevaluable query and at-rules with a block
+                    // w3b cannot honour (@font-face, @keyframes) are skipped.
+                    if media_applies(query) {
+                        let inner = parse(&body);
+                        sheet.rules.extend(inner.rules);
+                        sheet.imports.extend(inner.imports);
+                    }
+                } else if !head.starts_with('@') {
+                    add_block(&mut sheet, head, &body);
+                }
             }
             // A `;` outside a block ends a statement: only `@import` matters.
             ';' => {
@@ -230,6 +243,28 @@ pub fn parse_declarations(text: &str) -> BTreeMap<String, Declaration> {
         out.insert(name, Declaration { value, important });
     }
     out
+}
+
+/// Whether an `@media` query applies to w3b, which has one medium (`screen`)
+/// and no viewport, so a query with feature conditions cannot be evaluated.
+fn media_applies(query: &str) -> bool {
+    query.split(',').any(|part| {
+        let part = part.trim().to_ascii_lowercase();
+        if part.contains('(') {
+            return false;
+        }
+        let negated = part.starts_with("not ");
+        let medium = if negated { part[4..].trim() } else { part.as_str() };
+        if medium.is_empty() {
+            return !negated;
+        }
+        let on_screen = medium == "all" || medium == "screen";
+        if negated {
+            !on_screen
+        } else {
+            on_screen
+        }
+    })
 }
 
 /// The url of an `@import` argument: `url(x)`, `"x"` or `'x'`.
@@ -709,5 +744,41 @@ mod tests {
         assert!(none.hidden(&Target::alone(&gone), Some("Display: None !IMPORTANT")));
         // A value that merely starts with the keyword is not the keyword.
         assert!(!none.hidden(&Target::alone(&gone), Some("display: nonesuch")));
+    }
+
+    #[test]
+    fn media_blocks_are_applied_for_the_screen_medium() {
+        let s = sheet(
+            "@media screen { .on { display: none } } \
+             @media all { .all { visibility: hidden } } \
+             @media not print { .notprint { display: none } } \
+             @media print { .print { display: none } } \
+             @media (max-width: 600px) { .narrow { display: none } } \
+             @media screen and (min-width: 1px) { .wide { display: none } }",
+        );
+        for class in ["on", "all", "notprint"] {
+            let el = id("p", None, &[class]);
+            assert!(s.hidden(&Target::alone(&el), None), "a screen @media must hide .{class}");
+        }
+        for class in ["print", "narrow", "wide"] {
+            let el = id("p", None, &[class]);
+            assert!(!s.hidden(&Target::alone(&el), None), "this @media must not touch .{class}");
+        }
+    }
+
+    #[test]
+    fn media_rules_join_the_sheet_in_order() {
+        let el = id("p", None, &["x"]);
+        let later = sheet("@media screen { .x { visibility: hidden } } .x { visibility: visible }");
+        assert!(!later.hidden(&Target::alone(&el), None), "a later plain rule wins the tie");
+        let earlier = sheet(".x { visibility: visible } @media screen { .x { visibility: hidden } }");
+        assert!(earlier.hidden(&Target::alone(&el), None), "a later media rule wins the tie");
+    }
+
+    #[test]
+    fn at_rules_with_blocks_do_not_become_rules() {
+        let s = sheet("@font-face { font-family: mono; src: url(x.woff) } .h { display: none }");
+        assert_eq!(s.len(), 1, "only the plain rule should survive");
+        assert!(s.hidden(&Target::alone(&id("p", None, &["h"])), None));
     }
 }

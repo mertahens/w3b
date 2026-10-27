@@ -1039,4 +1039,15 @@ mod tests {
             assert!(text.contains("keep"), "{label}: the visible element vanished: {text:?}");
         }
     }
+
+    #[test]
+    fn a_hidden_rule_inside_a_media_block_takes_the_subtree() {
+        let doc = parse_with_css(
+            "<div class=\"ad\">gone<b>deeper</b></div><p class=\"pr\">printed</p><p>keep</p>",
+            &css::parse("@media screen { .ad { DISPLAY: NONE } } @media print { .pr { display: none } }"),
+        );
+        let text: String = doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
+        assert!(!text.contains("gone") && !text.contains("deeper"), "hidden text survived: {text:?}");
+        assert!(text.contains("printed") && text.contains("keep"), "screen text was dropped: {text:?}");
+    }
 }

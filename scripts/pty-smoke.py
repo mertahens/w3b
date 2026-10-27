@@ -24,13 +24,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PAGE = b"""<!doctype html>
 <html><head><title>Pty smoke</title>
-<style>.secret { display: none } .term { font-family: monospace }</style>
+<style>.secret { display: none } .term { font-family: monospace }
+@media screen { .media { visibility: HIDDEN } } @media print { .printer { display: none } }</style>
 </head>
 <body>
 <h1>Pty heading</h1>
 <p>some paragraph text that should show up on screen.</p>
 <p class="secret">SECRET-NEVER-SHOWN</p>
 <p class="secret" style="display: BLOCK !important">IMPORTANT-SHOWN</p>
+<p class="media">SECRET-MEDIA-HIDDEN</p>
+<p class="printer">PRINTER-STYLE-KEPT</p>
 <table><tr><th>Tool</th><th>Stars</th></tr><tr><td>w3b</td><td>12</td></tr></table>
 <p>with <code>code-text</code> and <span class="term">term-text</span> inline.</p>
 <p><img src="/img/logo.png" alt="logo"></p>
@@ -217,8 +220,10 @@ def main() -> int:
     # link's first letter, so the run starts at its second.
     if not re.search(rb"48;5;7m[ -~]*second page", raw):
         problems.append("the hover highlight did not cover the whole link text")
-    if b"SECRET-NEVER-SHOWN" in plain:
-        problems.append("a display: none element was rendered")
+    if b"SECRET-NEVER-SHOWN" in plain or b"SECRET-MEDIA-HIDDEN" in plain:
+        problems.append("an element hidden by display/visibility was rendered")
+    if b"PRINTER-STYLE-KEPT" not in plain:
+        problems.append("a @media print rule was applied on screen")
     # An inline `display: block !important` outranks the sheet's display: none.
     if b"IMPORTANT-SHOWN" not in plain:
         problems.append("an !important inline display was overridden")

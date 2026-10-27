@@ -195,7 +195,13 @@ come from the stylesheet, and they are taken while parsing:
   link: it cannot be tabbed to or followed. Declarations cascade the way CSS
   does (specificity, later wins, inline above the sheet, `!important` above all
   of it), and property names and keyword values ignore case, so
-  `style="DISPLAY: NONE"` hides just as well.`
+  `style="DISPLAY: NONE"` hides just as well.
+* **Which `@media` blocks count?** w3b is `screen`, so `@media screen`,
+  `@media all`, `@media not print` and a bare `@media {` apply, `@media print`
+  and `@media speech` do not, and a query with feature conditions
+  (`@media (max-width: 600px)`) is skipped because w3b has no viewport to
+  measure. Rules from an applicable block join the sheet in place, so they
+  cascade against plain rules like any other rule.`
 * **Is this text monospace?** `font-family: monospace` (or a family named after
   one: Courier, Menlo, JetBrains Mono, ...) marks the element; so do the tags the
   browser already draws monospaced (`code`, `pre`, `kbd`, `samp`, `tt`,
