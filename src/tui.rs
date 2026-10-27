@@ -51,6 +51,10 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             }
         }
         app.poll();
+        // The loading animation turns even when no input arrives.
+        if app.is_loading() {
+            app.tick();
+        }
     }
 }
 
@@ -87,10 +91,7 @@ fn base64(text: &str) -> String {
 
 fn draw(frame: &mut Frame, app: &mut App) {
     render::draw_all(app, frame.area(), frame.buffer_mut());
-    if matches!(app.mode, crate::app::Mode::Open | crate::app::Mode::Search) {
-        let row = frame.area().height.saturating_sub(2);
-        let prefix = if app.mode == crate::app::Mode::Open { 6 } else { 1 };
-        let column = (prefix + app.input_pos) as u16;
+    if let Some((column, row)) = render::cursor_screen_pos(app, frame.area()) {
         frame.set_cursor_position((column, row));
     }
 }

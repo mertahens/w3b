@@ -18,18 +18,25 @@ w3b keys  (i or ? toggles this)
   j / k          down, up        gg / G      top, bottom
   h / l          left, right     0 ^ $       line edges
   Ctrl-d / Ctrl-u  half page     PgDn/PgUp   full page
-  Enter          follow link     r           reload
+  Enter          follow or edit  r           reload
   Tab            next link       Shift-Tab   prev. link
   o or :         open url        /           search
   n / N          next/prev hit   Esc         cancel
   [ or Backspace back            ]           forward
   y              link target     w           toggle wrap
+  g then ...     go-to menu
+  in a field     typing edits, Esc or Enter is done
   q or Ctrl-c    quit            i or ?      this help
 ";
 
 /// Compose the style for one run: semantic flags, never page colors.
 fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
     let mut out = app.theme.text;
+    if style.mono {
+        // Monospace asks for a font, and w3b marks it with a dark background
+        // over the text itself - never the whole line.
+        out = out.patch(app.theme.monospace);
+    }
     if style.code {
         out = out.patch(app.theme.code);
     }
@@ -96,14 +103,7 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
         let y = area.y + (i - top) as u16;
         let is_cursor_row = i == app.view.cursor.row;
 
-        // A monospace block greys the whole line, the way a code block reads in
-        // a terminal. Table rows keep their grey inside the cells instead.
-        let line_style =
-            if row.runs.iter().any(|run| run.style.mono) && !row.runs.iter().any(|run| run.style.border) {
-                app.theme.text.patch(app.theme.monospace)
-            } else {
-                app.theme.text
-            };
+        let line_style = app.theme.text;
 
         // Clear the line first: stale pixels from a longer row must not remain.
         for x in 0..usize::from(area.width) {
@@ -199,37 +199,60 @@ pub fn render_status(app: &App, area: Rect, buf: &mut Buffer) {
         cell.set_style(bar);
     }
 
-    let left = status_text(&status);
+    let mut left = status_text(&status);
+    // A fetch in flight gets a braille spinner in front of the status word.
+    if app.is_loading() {
+        left = format!(" {}{}", app.spinner_glyph(), left.trim_start());
+    }
     let left_style = app.theme.status.for_status(status.kind(), status.code());
     let left_width = draw(buf, area, 0, &left, left_style);
 
-    let right = format!("{:>3}%", app.percent());
+    // Right hand side: how long the page took to load, then the cursor's
+    // position in the document.
+    let percent = format!("{:>3}%", app.percent());
+    let right = match (app.config.behavior.show_load_time, app.load_time_text()) {
+        (true, Some(took)) => format!("{took}  {percent}"),
+        _ => percent,
+    };
     let right_style = app.theme.position.patch(bar);
     let right_start = width.saturating_sub(right.width());
     draw(buf, area, right_start, &right, right_style);
 
     let middle_width = right_start.saturating_sub(left_width + 1);
+    // Each arm carries its finished style: the hover hint must keep its own
+    // background, so it patches the bar rather than being patched by it.
+    let bar_style = app.theme.status.base;
     let middle = match &app.message {
         Some(msg) => {
-            (Cow::Owned(msg.text.clone()), if msg.error { app.theme.status.error } else { app.theme.message })
+            let style = if msg.error { app.theme.status.error } else { app.theme.message };
+            (Cow::Owned(msg.text.clone()), style.patch(bar_style))
         }
         // Standing on a link: show where it goes.
         None if app.hover_target().is_some() => {
             let target = app.hover_target().unwrap_or_default();
-            (Cow::Owned(format!("-> {}", fit(&target, middle_width.saturating_sub(3)))), app.theme.link)
+            // The hint uses the same colours as the link highlighted under the
+            // cursor, so the pair reads as one thing.
+            (
+                Cow::Owned(format!("-> {}", fit(&target, middle_width.saturating_sub(3)))),
+                bar_style.patch(app.theme.hovered_link),
+            )
         }
         None => {
-            let url = fit(app.url(), middle_width / 2);
+            // Leave a blank column between the middle and the right segment.
+            let room = middle_width.saturating_sub(1);
+            // The url is the part worth keeping whole, so the title gives way
+            // first - and disappears rather than becoming a stub.
+            let url = fit(app.url(), room);
             let mut text = String::from(url.as_ref());
-            if app.config.behavior.show_title_in_status && !app.page.title.trim().is_empty() {
-                let title_width = middle_width.saturating_sub(url.width() + 3);
+            let left_over = room.saturating_sub(url.width());
+            if app.config.behavior.show_title_in_status && left_over >= 3 + 6 {
                 text.push_str(" \u{2014} ");
-                text.push_str(&fit(app.title(), title_width));
+                text.push_str(&fit(app.title(), left_over - 3));
             }
-            (Cow::Owned(text), app.theme.url)
+            (Cow::Owned(text), app.theme.url.patch(bar_style))
         }
     };
-    draw(buf, area, left_width + 1, &middle.0, middle.1.patch(bar));
+    draw(buf, area, left_width + 1, &middle.0, middle.1);
 }
 
 fn status_text(status: &Status) -> String {
@@ -275,6 +298,30 @@ pub fn render_prompt(app: &App, area: Rect, buf: &mut Buffer) {
 }
 
 /// Full screen frame: page, optional prompt row, status row, help overlay.
+/// Where the terminal caret belongs: in the status line while a prompt is open,
+/// or over the form field being typed into. `None` means no caret.
+pub fn cursor_screen_pos(app: &App, area: Rect) -> Option<(u16, u16)> {
+    let width = usize::from(area.width);
+    let page_height = area.height.saturating_sub(1);
+    match app.mode {
+        Mode::Open | Mode::Search => {
+            let prefix = if app.mode == Mode::Open { ":open ".chars().count() } else { 1 };
+            let row = area.y + page_height.saturating_sub(1);
+            Some(((prefix + app.input_pos) as u16, row))
+        }
+        Mode::Field => {
+            let x = app.padding_x() + app.view.cursor.col.saturating_sub(app.view.hscroll);
+            let y = usize::from(area.y) + app.view.cursor.row.saturating_sub(app.view.scroll);
+            if x < width && y < usize::from(page_height) {
+                Some((x as u16, y as u16))
+            } else {
+                None
+            }
+        }
+        Mode::Normal | Mode::Help => None,
+    }
+}
+
 pub fn draw_all(app: &App, area: Rect, buf: &mut Buffer) {
     let status_row = 1u16;
     let prompt_rows = if matches!(app.mode, Mode::Open | Mode::Search) { 1 } else { 0 };
@@ -292,8 +339,35 @@ pub fn draw_all(app: &App, area: Rect, buf: &mut Buffer) {
         Rect { x: area.x, y: area.y + page_height + prompt_rows, width: area.width, height: status_row };
     render_status(app, status_area, buf);
 
+    // The `g` menu is a hint, not a blocker: the page stays readable behind it.
+    if app.goto_menu_open() {
+        render_goto_menu(app, page_area, buf);
+    }
+
     if app.mode == Mode::Help {
         render_help(area, buf, app);
+    }
+}
+
+/// The which-key menu shown while `g` waits for its command.
+fn render_goto_menu(app: &App, area: Rect, buf: &mut Buffer) {
+    let entries = crate::app::GOTO_MENU;
+    let rows = entries.len().div_ceil(2);
+    let column = ((usize::from(area.width).saturating_sub(6)) / 2).clamp(10, 24);
+    let width = (column * 2 + 4).min(usize::from(area.width));
+    let height = (rows as u16 + 2).min(area.height);
+    let box_area =
+        Rect { x: area.x, y: area.y + area.height.saturating_sub(height), width: width as u16, height };
+    Clear.render(box_area, buf);
+    Block::bordered().border_style(app.theme.border).title(" go to ").render(box_area, buf);
+    let base = app.theme.status.base;
+    for (i, (key, what)) in entries.iter().enumerate() {
+        let (row, col) = (i / 2, i % 2);
+        let y = box_area.y + 1 + row as u16;
+        let x = usize::from(box_area.x) + 2 + col * column;
+        let line = Rect { x: x as u16, y, width: (column - 1) as u16, height: 1 };
+        draw(buf, line, 0, key, app.theme.link.patch(base).bold());
+        draw(buf, line, 3, what, app.theme.text.patch(base));
     }
 }
 

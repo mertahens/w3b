@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+use std::time::Instant;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -12,6 +13,18 @@ use crate::net::{normalize_target, Fetched, Fetcher};
 use crate::page::{Follow, Page, RenderOptions};
 use crate::status::{self, Status};
 use crate::theme::Theme;
+
+/// Commands the user can type after `g`. The menu shown while `g` is waiting
+/// is built from this list, so the two can never drift apart.
+pub const GOTO_MENU: &[(&str, &str)] = &[
+    ("g", "top of page"),
+    ("e", "end of page"),
+    ("o", "back"),
+    ("i", "forward"),
+    ("u", "enter a url"),
+    ("h", "home page"),
+    ("r", "reload"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cursor {
@@ -35,6 +48,8 @@ pub enum Mode {
     Open,
     Search,
     Help,
+    /// Typing into a form field. `App::editing` says which one.
+    Field,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +108,13 @@ pub struct App {
     seq: u64,
     rx: Option<Receiver<Reply>>,
     loading_url: Option<String>,
+    /// When the in-flight fetch started, so the status line can report how
+    /// long the page took.
+    fetch_started: Option<Instant>,
+    /// The form field currently being typed into (index into `Doc::fields`).
+    pub editing: Option<usize>,
+    /// Frame of the loading spinner, advanced while a fetch is in flight.
+    pub spin: usize,
 }
 
 impl App {
@@ -117,7 +139,7 @@ impl App {
         viewport: Viewport,
     ) -> App {
         let opts = render_options(&config, viewport);
-        let page = Page::placeholder(start_url, "loading", opts);
+        let page = Page::loading(start_url, opts);
         App {
             config,
             theme,
@@ -140,11 +162,27 @@ impl App {
             seq: 0,
             rx: None,
             loading_url: None,
+            fetch_started: None,
+            editing: None,
+            spin: 0,
         }
     }
 
     fn render_options(&self) -> RenderOptions {
         render_options(&self.config, self.viewport)
+    }
+
+    /// The load time for the status line: `143 ms`, `1.2s`, or while a fetch
+    /// is in flight. `None` means there is nothing to show.
+    pub fn load_time_text(&self) -> Option<String> {
+        if self.loading_url.is_some() {
+            return Some("\u{2026}".to_string());
+        }
+        match self.page.load_ms {
+            None => None,
+            Some(ms) if ms < 1000 => Some(format!("{ms} ms")),
+            Some(ms) => Some(format!("{:.1}s", ms as f64 / 1000.0)),
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -176,6 +214,21 @@ impl App {
         self.message = Some(Message { text: text.into(), error });
     }
 
+    /// True while `g` is waiting for the command that follows it.
+    pub fn goto_menu_open(&self) -> bool {
+        self.pending_g && self.mode == Mode::Normal
+    }
+
+    /// Go to the page w3b opens when started without a target.
+    pub fn open_home(&mut self) {
+        let url = self.config.behavior.home_url.clone();
+        if url == self.page.url {
+            self.show_message("already on the home page", false);
+        } else {
+            self.navigate(&url);
+        }
+    }
+
     pub fn enter_input_mode(&mut self, mode: Mode, initial: String) {
         self.mode = mode;
         self.input = initial;
@@ -199,7 +252,9 @@ impl App {
         });
         self.rx = Some(rx);
         self.loading_url = Some(url.to_string());
+        self.fetch_started = Some(Instant::now());
         self.message = None;
+        self.leave_field();
     }
 
     /// Apply a finished fetch, if one is waiting. Returns true when the page changed.
@@ -229,6 +284,7 @@ impl App {
 
     /// Fetch and apply synchronously (used by tests and `--dump`).
     pub fn open(&mut self, url: &str) {
+        self.fetch_started = Some(Instant::now());
         self.loading_url = Some(url.to_string());
         let target = url.to_string();
         let result = self.fetcher.fetch(&target);
@@ -247,6 +303,7 @@ impl App {
                 );
                 self.visited.insert(fetched.url.clone());
                 self.record_history();
+                self.page.load_ms = self.fetch_started.take().map(|t| t.elapsed().as_millis() as u64);
                 self.view = View::new();
                 self.rebuild_matches();
                 true
@@ -273,6 +330,7 @@ impl App {
     }
 
     fn fail_page(&mut self, url: &str, kind: NetError, detail: &str) {
+        self.fetch_started = None;
         self.page = Page::failure(url, kind, detail, self.render_options());
         self.view = View::new();
         self.rebuild_matches();
@@ -534,6 +592,64 @@ impl App {
 
 // --- links ----------------------------------------------------------------
 impl App {
+    /// The form field under the cursor, if the cursor sits on one.
+    pub fn field_under_cursor(&self) -> Option<usize> {
+        self.page.layout.field_at(self.view.cursor.row, self.view.cursor.col)
+    }
+
+    /// Start typing into a form field: the caret parks just past its text.
+    pub fn focus_field(&mut self, index: usize) {
+        let name = match self.page.doc.fields.get(index) {
+            Some(field) => field.name.clone(),
+            None => "field".to_string(),
+        };
+        self.editing = Some(index);
+        self.mode = Mode::Field;
+        self.place_cursor_in_field(index);
+        self.show_message(format!("typing in {name} (Enter or Esc to finish)"), false);
+    }
+
+    /// Leave field editing without touching what was typed.
+    pub fn leave_field(&mut self) {
+        self.editing = None;
+        if self.mode == Mode::Field {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    pub fn field_value(&self, index: usize) -> String {
+        self.page.doc.fields.get(index).map(|f| f.value.clone()).unwrap_or_default()
+    }
+
+    /// Replace a field's value and re-flow the page, keeping the caret on it.
+    pub fn commit_field(&mut self, index: usize, value: &str) {
+        let opts = self.render_options();
+        self.page.set_field(index, value, opts);
+        self.place_cursor_in_field(index);
+    }
+
+    fn place_cursor_in_field(&mut self, index: usize) {
+        if let Some((row, end)) = self.page.layout.field_end(index) {
+            self.view.cursor.row = row;
+            self.view.cursor.col = end;
+            self.ensure_visible();
+        }
+    }
+
+    /// The braille spinner shown while a page is loading.
+    pub fn spinner_glyph(&self) -> char {
+        const SPINNER: [char; 10] = [
+            '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
+            '\u{2808}', '\u{280f}',
+        ];
+        SPINNER[self.spin % SPINNER.len()]
+    }
+
+    /// Advance the loading animation. The event loop calls this on every tick.
+    pub fn tick(&mut self) {
+        self.spin = self.spin.wrapping_add(1);
+    }
+
     pub fn link_under_cursor(&self) -> Option<usize> {
         self.page.link_at(self.view.cursor.row, self.view.cursor.col)
     }
@@ -569,6 +685,11 @@ impl App {
 
     /// Follow the link under the cursor, or report why it cannot be followed.
     pub fn follow_cursor(&mut self) {
+        // A form field under the cursor is edited rather than followed.
+        if let Some(index) = self.field_under_cursor() {
+            self.focus_field(index);
+            return;
+        }
         match self.link_under_cursor() {
             None => self.show_message("no link under cursor", false),
             Some(index) => match &self.page.links[index].follow {
@@ -604,31 +725,70 @@ impl App {
                 self.show_message(format!("yanked: {target}"), false);
                 Some(target)
             }
+            // Nothing selected: yank the page itself.
             None => {
-                self.show_message("nothing to yank", false);
-                None
+                let url = self.page.url.clone();
+                if url.is_empty() {
+                    self.show_message("nothing to yank", false);
+                    return None;
+                }
+                self.show_message(format!("yanked: {url}"), false);
+                Some(url)
             }
         }
     }
 
-    /// Move the cursor to the next link placement at or after the cursor.
+    /// Move the cursor to the next link or form field. The cursor standing on
+    /// one makes it the current item, so `Tab` steps past it.
     pub fn next_link(&mut self) {
         let here = (self.view.cursor.row, self.view.cursor.col);
-        let next =
-            self.page.layout.links.iter().filter(|p| (p.row, p.end) > here).min_by_key(|p| (p.row, p.start));
-        self.jump_to_placement(next.map(|p| (p.row, p.start)));
+        let current = self.current_focusable(here);
+        let all = self.focusables();
+        let from = current.map(|c| (c.0, c.1)).unwrap_or(here);
+        let next = if current.is_some() {
+            all.into_iter().filter(|f| (f.0, f.1) > from).min_by_key(|f| (f.0, f.1))
+        } else {
+            all.into_iter().filter(|f| (f.0, f.1) >= from).min_by_key(|f| (f.0, f.1))
+        };
+        self.jump_to_placement(next.map(|f| (f.0, f.1)));
     }
 
     pub fn prev_link(&mut self) {
         let here = (self.view.cursor.row, self.view.cursor.col);
-        let prev = self
-            .page
-            .layout
-            .links
-            .iter()
-            .filter(|p| (p.row, p.start) < here)
-            .max_by_key(|p| (p.row, p.start));
-        self.jump_to_placement(prev.map(|p| (p.row, p.start)));
+        let from = self.current_focusable(here).map(|c| (c.0, c.1)).unwrap_or(here);
+        let prev = self.focusables().into_iter().filter(|f| (f.0, f.1) < from).max_by_key(|f| (f.0, f.1));
+        self.jump_to_placement(prev.map(|f| (f.0, f.1)));
+    }
+
+    /// The link or field the cursor is standing on: (row, start, end).
+    fn current_focusable(&self, here: (usize, usize)) -> Option<(usize, usize, usize)> {
+        self.focusables().into_iter().find(|f| f.0 == here.0 && f.1 <= here.1 && here.1 < f.2)
+    }
+
+    /// Everything the cursor can jump to: links and editable fields, in reading
+    /// order, as (row, start, end). A target that covers several runs - a link
+    /// of several words - counts once, from its first cell to its last.
+    fn focusables(&self) -> Vec<(usize, usize, usize)> {
+        // Keyed by kind so link 0 and field 0 cannot collapse into one span.
+        let mut spans: BTreeMap<(u8, usize, usize), (usize, usize)> = BTreeMap::new();
+        for p in &self.page.layout.links {
+            let e = spans.entry((0, p.link, p.row)).or_insert((p.start, p.end));
+            e.0 = e.0.min(p.start);
+            e.1 = e.1.max(p.end);
+        }
+        for (row, r) in self.page.layout.rows.iter().enumerate() {
+            for run in &r.runs {
+                if let Some(field) = run.field {
+                    let e = spans.entry((1, field, row)).or_insert((run.start, run.end()));
+                    e.0 = e.0.min(run.start);
+                    e.1 = e.1.max(run.end());
+                }
+            }
+        }
+        let mut out: Vec<(usize, usize, usize)> =
+            spans.into_iter().map(|((_, _, row), (start, end))| (row, start, end)).collect();
+        out.sort();
+        out
     }
 
     fn jump_to_placement(&mut self, placement: Option<(usize, usize)>) {
@@ -639,7 +799,7 @@ impl App {
                 self.view.cursor.desired = start;
                 self.ensure_visible();
             }
-            None => self.show_message("no more links", false),
+            None => self.show_message("no more links or fields", false),
         }
     }
 }

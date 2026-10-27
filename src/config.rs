@@ -71,7 +71,7 @@ pub struct StyleConfig {
     pub border: StyleSpec,
     /// Image placeholders such as `[alt text]`.
     pub image: StyleSpec,
-    /// Elements that ask for a monospace font. The background spans the line.
+    /// Elements that ask for a monospace font, marked over the text itself.
     pub monospace: StyleSpec,
     /// The link the cursor is standing on.
     pub hovered_link: StyleSpec,
@@ -101,6 +101,8 @@ pub struct Behavior {
     pub yank_to_clipboard: bool,
     /// How many linked stylesheets a page may pull in at most.
     pub max_stylesheets: usize,
+    /// Show how long the page took to fetch on the right of the status line.
+    pub show_load_time: bool,
 }
 
 impl Default for Behavior {
@@ -122,6 +124,7 @@ impl Default for Behavior {
             page_padding_x: 1,
             yank_to_clipboard: true,
             max_stylesheets: 4,
+            show_load_time: true,
         }
     }
 }

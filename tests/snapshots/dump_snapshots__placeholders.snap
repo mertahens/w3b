@@ -2,6 +2,6 @@
 source: tests/dump_snapshots.rs
 expression: "show(html, 60)"
 ---
-[logo]
+[img: logo]
 
-[ input ] [ ] [ Send ]
+[ x ] [ ] [ Send ]

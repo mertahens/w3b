@@ -17,7 +17,7 @@ mail link and a anchor.
       println!("hello");
   }
 ────────────────────────────────────────────────────────────
- 200 OK  https://example.com — Design notes - w3b       0%
+ 200 OK  https://example.com — Design notes - w3b  41 ms  0%
 ```
 
 * The **cursor** is a real cursor: it moves with `j k h l`, and the page scrolls
@@ -29,8 +29,12 @@ mail link and a anchor.
 * **Tables** are drawn as box-drawing grids (`┌─┬┐ │ ├┼┤ └┴┘`) with the header
   rule, wrapped cells and `align` respected; when the terminal is too narrow for
   a grid they fall back to one line per row.
-* The **status line** at the bottom shows `[status]  url — title  percent`, where
-  status is derived from the HTTP status code (`200 OK`, `404 NOT FOUND`) or
+* **Images** are never fetched or drawn. They leave an `[img: alt]` label (the
+  file name when there is no alt text) painted with `[style.image]`: black on
+  purple by default.
+* The **status line** at the bottom shows `[status]  url — title  time  percent`
+  - the load time can be switched off with `show_load_time = false`. Status comes
+  from the HTTP status code (`200 OK`, `404 NOT FOUND`) or a braille spinner and
   `LOADING` while a request is in flight, and network failures show the reason
   (`ERROR DNS`, `ERROR TLS`, `ERROR TIMEOUT`, …).
 * `--dump URL` prints the same layout as plain text, for scripts and tests.
@@ -71,17 +75,25 @@ printed), `2` for a failed request or a bad config.
 | `0` `^` `$` | line start, first non-blank, line end |
 | `Ctrl-d` `Ctrl-u` | half page down / up |
 | `Ctrl-f` `Ctrl-b`, `PgDn` `PgUp` | page down / up |
-| `Enter` | follow the link under the cursor (same-document `#section` links jump) |
-| `Tab` `Shift-Tab` | next / previous link |
+| `Enter` | follow the link under the cursor, or type into the form field under it |
+| `g` then `g` `e` `o` `i` `u` `h` `r` | go-to menu: top, end, back (out), forward (in), enter a url, home, reload (`Esc` cancels) |
+| `Tab` `Shift-Tab` | next / previous link or form field |
 | `o` or `:` | open a url (or a search term) |
 | `/` | search, then `n` `N` for next / previous |
 | `r` | reload |
 | `Backspace` or `[` | back in history |
 | `]` | forward in history |
-| `y` | yank the link under the cursor: its target goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
+| `y` | yank: the link under the cursor, or the page url when nothing is under it. The text goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
 | `w` | toggle line wrapping |
 | `i` or `?` | key help |
+| while typing in a field | `Backspace` erases, `Ctrl-u` clears, `Ctrl-w` deletes a word, `Enter` or `Esc` is done |
 | `q`, `Ctrl-c` | quit |
+
+`<input>` and `<textarea>` are editable: move onto one (or press `Tab` to the
+next link and then `Enter`) and type. A `password` field shows dots but keeps
+what you typed, and a value is remembered for as long as you stay on the page -
+navigating away starts over. Nothing is submitted (see
+[Not implemented](#not-implemented-on-purpose-for-now)).
 
 Mouse wheel and left-click work too; disable with `mouse = false`. The link the
 cursor stands on is highlighted with `[style.hovered_link]` and its target is
@@ -114,7 +126,7 @@ muted = { fg = "dark_gray" }
 divider = { fg = "dark_gray" }
 placeholder = { fg = "dark_gray", italic = true }
 image = { fg = "black", bg = "magenta", italic = true }
-monospace = { bg = "gray" }
+monospace = { bg = "#555555" }
 hovered_link = { fg = "black", bg = "gray", underline = true }
 cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
@@ -164,6 +176,7 @@ history_size = 200
 page_padding_x = 1
 yank_to_clipboard = true
 max_stylesheets = 4
+show_load_time = true
 ```
 
 Colours accept any ratatui colour name (`red`, `dark_gray`, `light_blue`), a 256
@@ -182,8 +195,8 @@ come from the stylesheet, and they are taken while parsing:
 * **Is this text monospace?** `font-family: monospace` (or a family named after
   one: Courier, Menlo, JetBrains Mono, ...) marks the element; so do the tags the
   browser already draws monospaced (`code`, `pre`, `kbd`, `samp`, `tt`,
-  `textarea`). The renderer paints `[style.monospace]` across the whole line, so
-  a code block reads as a grey block even on its blank tail.
+  `textarea`). `[style.monospace]` is painted over that text only - the rest of
+  the line, and the lines around it, are left alone.
 
 Everything else in CSS — colours, sizes, positioning, `float`, `grid` — is
 ignored on purpose.
@@ -206,7 +219,8 @@ fetch (ureq, blocking, on a worker thread)
   -> sanitize (strip C0/C1/ESC so a page cannot write to your terminal)
   -> CSS harvest (<style>, <link rel=stylesheet>, @import) -> parse (src/css)
   -> html5ever via scraper -> flow blocks (paragraphs, headings, items, pre,
-     tables), with hidden elements dropped and monospace ones marked
+     tables), with hidden elements dropped, monospace ones marked and form
+     fields carrying their editable values
   -> layout: wrapped rows, box-drawing tables + link placements (unicode widths)
   -> viewport window -> ratatui buffer
 ```
@@ -254,5 +268,6 @@ terminal.
 ## Not implemented (on purpose, for now)
 
 JavaScript, CSS colours and layout (only visibility and `font-family` are
-consulted, see [CSS](#css)), frames, form submission, cookies,
+consulted, see [CSS](#css)), frames, form submission (fields are typed into,
+never sent), cookies,
 `mailto:`/`tel:` handlers, image display, HTTPS client certificates, and tabs.

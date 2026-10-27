@@ -70,8 +70,9 @@ fn relative_links_resolve_against_the_response_url() {
         .collect();
     assert_eq!(targets, vec![server.url("/dir/next.html"), server.url("/top")]);
 
-    // Tab to the first link and follow it with Enter.
-    app.handle_key(common::key(ratatui::crossterm::event::KeyCode::Tab));
+    // The cursor opens on the first link, so Enter follows it. (`Tab` steps to
+    // the next link, not the one already under the cursor.)
+    app.handle_key(common::key(ratatui::crossterm::event::KeyCode::Enter));
     app.handle_key(common::key(ratatui::crossterm::event::KeyCode::Enter));
     app.settle();
     assert_eq!(app.status().text(), "200 OK");
@@ -195,6 +196,21 @@ fn typed_targets_become_urls_or_searches() {
     assert_eq!(normalize_target("rust browser").unwrap(), "https://duckduckgo.com/?q=rust+browser");
     assert_eq!(normalize_target("ä").unwrap(), "https://duckduckgo.com/?q=%C3%A4");
     assert!(normalize_target("").is_err());
+    // Without a scheme in front, an address is still an address.
+    assert_eq!(normalize_target("example.com:8080/x").unwrap(), "https://example.com:8080/x");
+    assert_eq!(normalize_target("www.example.com").unwrap(), "https://www.example.com/");
+    assert_eq!(normalize_target("localhost:8080").unwrap(), "http://localhost:8080/");
+    assert_eq!(normalize_target("localhost/x").unwrap(), "http://localhost/x");
+    assert_eq!(normalize_target("127.0.0.1:3000").unwrap(), "http://127.0.0.1:3000/");
+    // A half-typed or upper case scheme is still understood.
+    assert_eq!(normalize_target("https:/example.com").unwrap(), "https://example.com/");
+    assert_eq!(normalize_target("HTTPS://example.com/x").unwrap(), "https://example.com/x");
+    // A scheme w3b cannot fetch is not an address: searching beats mangling it
+    // into a url.
+    assert_eq!(
+        normalize_target("mailto:me@example.com").unwrap(),
+        "https://duckduckgo.com/?q=mailto%3Ame%40example.com"
+    );
 }
 
 #[test]

@@ -71,16 +71,68 @@ pub fn normalize_target(input: &str) -> Result<String, Error> {
         let parsed = url::Url::parse(input).map_err(|e| Error::BadUrl(e.to_string()))?;
         return Ok(parsed.into());
     }
-    if input.contains('/') || input.contains('.') {
-        let candidate = format!("https://{input}");
-        if let Ok(parsed) = url::Url::parse(&candidate) {
-            return Ok(parsed.into());
+    // No scheme: an address gets `https://` in front of it (plain `http://` for
+    // localhost, where that is what is actually running), anything else is a
+    // search phrase.
+    let hostless = half_typed_scheme(input);
+    let candidate = match hostless {
+        Some(rest) => format!("https://{rest}"),
+        None if looks_like_host(input) => {
+            let scheme = if is_local_authority(input) { "http" } else { "https" };
+            format!("{scheme}://{input}")
         }
+        None => {
+            // Not a host: search for it, and percent-encode whatever was typed.
+            let search = url::Url::parse_with_params("https://duckduckgo.com/", &[("q", input)])
+                .map_err(|e| Error::BadUrl(e.to_string()))?;
+            return Ok(search.into());
+        }
+    };
+    if let Ok(parsed) = url::Url::parse(&candidate) {
+        return Ok(parsed.into());
     }
-    // Not a host: search for it, and percent-encode whatever was typed.
     let search = url::Url::parse_with_params("https://duckduckgo.com/", &[("q", input)])
         .map_err(|e| Error::BadUrl(e.to_string()))?;
     Ok(search.into())
+}
+
+/// `example.com:8080/x` and `localhost` name a machine; `rust browser` does not.
+fn looks_like_host(input: &str) -> bool {
+    if input.is_empty() || input.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    if input.eq_ignore_ascii_case("localhost") || input.starts_with("localhost:") {
+        return true;
+    }
+    // `mailto:nowhere` names a scheme, `example.com:8080` names a port.
+    if let Some((_, rest)) = input.split_once(':') {
+        if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    input.contains('.') || input.contains(':') || input.contains('/')
+}
+
+/// A mistyped scheme such as `https:/example.com` still means a url. Returns
+/// the part after the scheme, or `None` when there is no scheme at all.
+fn half_typed_scheme(input: &str) -> Option<&str> {
+    let lower = input.to_ascii_lowercase();
+    for prefix in ["https:/", "https:", "http:/", "http:"] {
+        if lower.starts_with(prefix) {
+            let rest = input[prefix.len()..].trim_start_matches('/');
+            if !rest.is_empty() {
+                return Some(rest);
+            }
+        }
+    }
+    None
+}
+
+/// Development servers on localhost are served over plain http.
+fn is_local_authority(input: &str) -> bool {
+    let authority = input.split(['/', '?', '#']).next().unwrap_or(input);
+    let host = authority.split_once(':').map_or(authority, |(h, _)| h);
+    host.eq_ignore_ascii_case("localhost") || host.starts_with("127.") || matches!(host, "::1" | "0.0.0.0")
 }
 
 pub trait Fetcher: Send + Sync {

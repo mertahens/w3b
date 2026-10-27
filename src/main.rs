@@ -90,7 +90,11 @@ fn dump(
 
     print!("{}", plain_text(app.layout()));
     let status = app.status();
-    eprintln!("[{}] {} - {}", status.text(), app.url(), app.title());
+    let took = match (app.config.behavior.show_load_time, app.load_time_text()) {
+        (true, Some(t)) => format!(" ({t})"),
+        _ => String::new(),
+    };
+    eprintln!("[{}] {} - {}{took}", status.text(), app.url(), app.title());
     let code = match status.kind() {
         StatusKind::Ok | StatusKind::Redirect => 0,
         StatusKind::ClientError | StatusKind::ServerError => 1,

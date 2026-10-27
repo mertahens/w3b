@@ -38,6 +38,9 @@ pub struct Page {
     pub layout: Layout,
     /// Explains why a body is not shown (binary content and the like).
     pub notice: Option<String>,
+    /// How long the fetch took, in milliseconds. Only a real fetch has one:
+    /// pages w3b wrote itself (errors, the loading placeholder) have `None`.
+    pub load_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +104,7 @@ impl Page {
             links,
             layout: Layout::default(),
             notice,
+            load_ms: None,
         };
         page.relayout(opts);
         page
@@ -133,13 +137,35 @@ impl Page {
             links: Vec::new(),
             layout,
             notice: None,
+            load_ms: None,
         }
     }
 
-    pub fn placeholder(url: &str, message: &str, opts: RenderOptions) -> Page {
-        let mut page = Page::failure(url, NetError::Other, message, opts);
-        page.status = Status::http(200);
-        page
+    /// The page shown while the first fetch of a session is in flight. It must
+    /// not read as a failure: no error heading, and a loading status.
+    pub fn loading(url: &str, opts: RenderOptions) -> Page {
+        let mut doc = Doc::default();
+        doc.blocks.push(Block {
+            kind: BlockKind::Heading(1),
+            indent: 0,
+            pieces: vec![Piece { text: "Loading".into(), ..piece() }],
+        });
+        doc.blocks.push(Block {
+            kind: BlockKind::Paragraph,
+            indent: 0,
+            pieces: vec![Piece { text: url.to_string(), ..piece() }],
+        });
+        let layout = layout::layout(&doc, opts.width.max(1), opts.tab_width, opts.wrap);
+        Page {
+            url: url.to_string(),
+            title: String::new(),
+            status: Status::loading(),
+            doc,
+            links: Vec::new(),
+            layout,
+            notice: None,
+            load_ms: None,
+        }
     }
 
     /// Re-flow the text for a different terminal width. Never re-fetches.
@@ -153,6 +179,39 @@ impl Page {
             });
         }
         self.layout = layout::layout(&doc, opts.width.max(1), opts.tab_width, opts.wrap);
+    }
+
+    /// What a form field holds, or `None` when there is no such field.
+    pub fn field_value(&self, index: usize) -> Option<&str> {
+        self.doc.fields.get(index).map(|f| f.value.as_str())
+    }
+
+    /// Type into a form field. The text of a field belongs to the document, so
+    /// the piece is rewritten and the page re-flowed: typed text wraps, scrolls
+    /// and is laid out like any other text.
+    pub fn set_field(&mut self, index: usize, value: &str, opts: RenderOptions) {
+        let Some(field) = self.doc.fields.get_mut(index) else { return };
+        field.value = value.to_string();
+        let text = field.display();
+        for block in &mut self.doc.blocks {
+            for piece in &mut block.pieces {
+                if piece.field == Some(index) {
+                    piece.text = text.clone();
+                }
+            }
+        }
+        for table in &mut self.doc.tables {
+            for row in &mut table.rows {
+                for cell in row {
+                    for piece in &mut cell.pieces {
+                        if piece.field == Some(index) {
+                            piece.text = text.clone();
+                        }
+                    }
+                }
+            }
+        }
+        self.relayout(opts);
     }
 
     pub fn link_at(&self, row: usize, col: usize) -> Option<usize> {
@@ -228,6 +287,7 @@ fn piece() -> Piece {
         italic: false,
         code: false,
         muted: false,
+        field: None,
         image: false,
     }
 }
@@ -286,5 +346,68 @@ fn prettify_title(url: &str) -> String {
             }
         }
         Err(_) => url.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(width: usize) -> RenderOptions {
+        RenderOptions { width, tab_width: 4, wrap: true }
+    }
+
+    fn page(html: &str) -> Page {
+        let fetched = Fetched {
+            status: 200,
+            url: "https://test.local/form".to_string(),
+            content_type: Some("text/html".to_string()),
+            bytes: html.as_bytes().to_vec(),
+        };
+        Page::from_fetched(&fetched, opts(40))
+    }
+
+    fn row(page: &Page, row: usize) -> String {
+        page.layout.rows[row].runs.iter().map(|r| r.text.as_str()).collect::<String>().trim_end().to_string()
+    }
+
+    fn rows(page: &Page) -> Vec<String> {
+        (0..page.row_count()).map(|i| row(page, i)).collect()
+    }
+
+    #[test]
+    fn typing_rewrites_the_field_text_and_the_layout() {
+        let mut page = page("<p>query <input name=q></p>");
+        assert_eq!(page.doc.fields.len(), 1);
+        assert_eq!(row(&page, 0), "query [ input ]");
+
+        page.set_field(0, "ls -l", opts(40));
+        assert_eq!(page.doc.fields[0].value, "ls -l");
+        assert_eq!(row(&page, 0), "query [ ls -l ]");
+        assert_eq!(page.layout.field_at(0, 8), Some(0), "the field still covers its text");
+    }
+
+    #[test]
+    fn re_typing_a_field_never_stacks_the_notice_block() {
+        let mut page = page("<p>a <input></p>");
+        page.notice = Some("hello".to_string());
+        page.relayout(opts(10));
+        let before = rows(&page).len();
+        page.set_field(0, "sit", opts(10));
+        let with_text = rows(&page).len();
+        for _ in 0..5 {
+            page.set_field(0, "sit", opts(10));
+        }
+        assert_eq!(rows(&page).len(), with_text, "re-typing the same text must not grow the page");
+        assert_eq!(rows(&page).iter().filter(|r| r.contains("hello")).count(), 1);
+        assert!(rows(&page).iter().any(|r| r.contains("[ sit ]")), "{:?}", rows(&page));
+        assert_ne!(before, 0);
+    }
+
+    #[test]
+    fn an_unknown_field_index_is_ignored() {
+        let mut page = page("<p>hello</p>");
+        page.set_field(7, "x", opts(40));
+        assert_eq!(row(&page, 0), "hello");
     }
 }

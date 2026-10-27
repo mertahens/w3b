@@ -27,6 +27,8 @@ pub struct Run {
     pub start: usize,
     pub style: CellStyle,
     pub link: Option<usize>,
+    /// Set for the text of an editable form field (index into `Doc::fields`).
+    pub field: Option<usize>,
 }
 
 impl Run {
@@ -85,6 +87,25 @@ impl Layout {
     /// Link occupying this display cell, if any.
     pub fn link_at(&self, row: usize, col: usize) -> Option<usize> {
         self.links.iter().find(|p| p.row == row && col >= p.start && col < p.end).map(|p| p.link)
+    }
+
+    /// The form field whose text covers this cell, if any.
+    pub fn field_at(&self, row: usize, col: usize) -> Option<usize> {
+        self.rows.get(row)?.runs.iter().find_map(|run| {
+            if run.start <= col && col < run.end() {
+                run.field
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The row a field's text ends on and the column just past it, which is
+    /// where the caret belongs while the field is being typed into.
+    pub fn field_end(&self, index: usize) -> Option<(usize, usize)> {
+        self.rows.iter().enumerate().rev().find_map(|(row, r)| {
+            r.runs.iter().rev().find(|run| run.field == Some(index)).map(|run| (row, run.end()))
+        })
     }
 }
 
@@ -148,6 +169,7 @@ fn divider_row(width: usize) -> Row {
             start: 0,
             style: CellStyle { muted: true, ..CellStyle::default() },
             link: None,
+            field: None,
         }],
         width,
     }
@@ -155,14 +177,19 @@ fn divider_row(width: usize) -> Row {
 
 fn layout_pre(out: &mut Layout, block: &Block, indent: usize, opts: Options) {
     let prefix = " ".repeat(indent + 2);
-    let indent_run =
-        Run { text: prefix, start: 0, style: CellStyle { code: true, ..CellStyle::default() }, link: None };
+    let indent_run = Run {
+        text: prefix,
+        start: 0,
+        style: CellStyle { code: true, ..CellStyle::default() },
+        link: None,
+        field: None,
+    };
     let col = indent_run.width();
     let mut row = Row { runs: vec![indent_run], width: col };
     for piece in &block.pieces {
         let style = style_of(piece, false);
         let text = expand_tabs(&piece.text, opts.tab_width);
-        let run = Run { text, start: col, style, link: piece.link };
+        let run = Run { text, start: col, style, link: piece.link, field: piece.field };
         if let Some(link) = piece.link {
             out.links.push(LinkPlacement { link, row: out.rows.len(), start: col, end: run.end() });
         }
@@ -178,22 +205,23 @@ fn layout_flow(out: &mut Layout, block: &Block, prefix: String, opts: Options) {
 }
 
 fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: String, opts: Options) {
-    let cont_run = Run { text: cont.clone(), start: 0, style: CellStyle::default(), link: None };
-    let indent_run = Run { text: prefix.clone(), start: 0, style: CellStyle::default(), link: None };
+    let cont_run = Run { text: cont.clone(), start: 0, style: CellStyle::default(), link: None, field: None };
+    let indent_run =
+        Run { text: prefix.clone(), start: 0, style: CellStyle::default(), link: None, field: None };
     let mut row = Row { runs: vec![indent_run.clone()], width: prefix.width() };
     let mut col = prefix.width();
 
     for piece in &block.pieces {
         let style = style_of(piece, matches!(block.kind, BlockKind::Heading(_)));
         let text = expand_tabs(&piece.text, opts.tab_width);
-        for token in tokenize(&text) {
+        for token in tokens_for(text, piece.field.is_some()) {
             let token_width = token.text.width();
             if token.space {
                 if !row.runs.is_empty() && col > prefix.width() {
                     col = push_run(
                         out,
                         &mut row,
-                        Run { text: " ".into(), start: col, style, link: piece.link },
+                        Run { text: " ".into(), start: col, style, link: piece.link, field: piece.field },
                     );
                     continue;
                 }
@@ -212,8 +240,11 @@ fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: Stri
                     let parts = hard_split(&token.text, chunk);
                     let last = parts.len().saturating_sub(1);
                     for (i, part) in parts.into_iter().enumerate() {
-                        col =
-                            push_run(out, &mut row, Run { text: part, start: col, style, link: piece.link });
+                        col = push_run(
+                            out,
+                            &mut row,
+                            Run { text: part, start: col, style, link: piece.link, field: piece.field },
+                        );
                         if i < last {
                             trim_and_push(out, std::mem::take(&mut row));
                             row = Row { runs: vec![cont_run.clone()], width: cont.width() };
@@ -223,7 +254,11 @@ fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: Stri
                     continue;
                 }
             }
-            col = push_run(out, &mut row, Run { text: token.text, start: col, style, link: piece.link });
+            col = push_run(
+                out,
+                &mut row,
+                Run { text: token.text, start: col, style, link: piece.link, field: piece.field },
+            );
         }
     }
     trim_and_push(out, row);
@@ -283,6 +318,16 @@ struct Token {
 
 /// Split a piece's text into words and whitespace runs, so wrapping can look
 /// for break points across piece boundaries.
+/// Tokens for a piece. A form field is one unbreakable token: its brackets and
+/// its value must not end up on separate rows.
+fn tokens_for(text: String, atomic: bool) -> Vec<Token> {
+    if atomic {
+        vec![Token { text, space: false }]
+    } else {
+        tokenize(&text)
+    }
+}
+
 fn tokenize(text: &str) -> Vec<Token> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -379,12 +424,24 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
             let mut runs: Vec<Run> = Vec::new();
             let mut col = 0usize;
             if !pad.is_empty() {
-                runs.push(Run { text: pad.clone(), start: 0, style: CellStyle::default(), link: None });
+                runs.push(Run {
+                    text: pad.clone(),
+                    start: 0,
+                    style: CellStyle::default(),
+                    link: None,
+                    field: None,
+                });
             }
             push_border(&mut runs, &mut col, '\u{2502}');
             for c in 0..cols {
                 if left_gutter > 0 {
-                    runs.push(Run { text: " ".repeat(left_gutter), start: col, style: bases[c], link: None });
+                    runs.push(Run {
+                        text: " ".repeat(left_gutter),
+                        start: col,
+                        style: bases[c],
+                        link: None,
+                        field: None,
+                    });
                     col += left_gutter;
                 }
                 let cell_start = col;
@@ -397,7 +454,13 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                     crate::dom::Align::Left => 0,
                 };
                 if left_pad > 0 {
-                    runs.push(Run { text: " ".repeat(left_pad), start: col, style: bases[c], link: None });
+                    runs.push(Run {
+                        text: " ".repeat(left_pad),
+                        start: col,
+                        style: bases[c],
+                        link: None,
+                        field: None,
+                    });
                     col += left_pad;
                 }
                 for run in line {
@@ -410,7 +473,13 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                             end: col + width,
                         });
                     }
-                    runs.push(Run { text: run.text, start: col, style: run.style, link: run.link });
+                    runs.push(Run {
+                        text: run.text,
+                        start: col,
+                        style: run.style,
+                        link: run.link,
+                        field: run.field,
+                    });
                     col += width;
                 }
                 if col < cell_start + widths[c] {
@@ -419,6 +488,7 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                         start: col,
                         style: bases[c],
                         link: None,
+                        field: None,
                     });
                     col = cell_start + widths[c];
                 }
@@ -428,6 +498,7 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                         start: col,
                         style: bases[c],
                         link: None,
+                        field: None,
                     });
                     col += right_gutter;
                 }
@@ -445,6 +516,7 @@ fn push_border(runs: &mut Vec<Run>, col: &mut usize, ch: char) {
         start: *col,
         style: CellStyle { border: true, ..CellStyle::default() },
         link: None,
+        field: None,
     });
     *col += 1;
 }
@@ -461,7 +533,13 @@ fn table_rule(
     let mut runs: Vec<Run> = Vec::new();
     let mut col = 0usize;
     if !pad.is_empty() {
-        runs.push(Run { text: pad.to_string(), start: 0, style: CellStyle::default(), link: None });
+        runs.push(Run {
+            text: pad.to_string(),
+            start: 0,
+            style: CellStyle::default(),
+            link: None,
+            field: None,
+        });
     }
     let mut ch = left;
     for (i, w) in widths.iter().enumerate() {
@@ -471,6 +549,7 @@ fn table_rule(
             start: col,
             style: CellStyle { border: true, ..CellStyle::default() },
             link: None,
+            field: None,
         });
         col += w + gutter;
         ch = if i + 1 == widths.len() { right } else { mid };
@@ -496,18 +575,18 @@ fn fit_columns(natural: &[usize], avail: usize) -> Vec<usize> {
 
 /// Cell content wrapped to `width` lines, keeping per-piece styles and links.
 fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
-    let mut tokens: Vec<(String, CellStyle, Option<usize>)> = Vec::new();
+    let mut tokens: Vec<(String, CellStyle, Option<usize>, Option<usize>)> = Vec::new();
     for piece in &cell.pieces {
         let mut style = style_of(piece, false);
         if cell.header {
             style.bold = true;
         }
-        for token in tokenize(&piece.text) {
+        for token in tokens_for(piece.text.clone(), piece.field.is_some()) {
             let text = if token.space { " ".to_string() } else { token.text.clone() };
             if text == " " && tokens.last().map(|t| t.0 == " ").unwrap_or(false) {
                 continue;
             }
-            tokens.push((text, style, piece.link));
+            tokens.push((text, style, piece.link, piece.field));
         }
     }
     while tokens.first().map(|t| t.0 == " ").unwrap_or(false) {
@@ -517,7 +596,7 @@ fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
     let mut lines: Vec<Vec<Run>> = Vec::new();
     let mut line: Vec<Run> = Vec::new();
     let mut col = 0usize;
-    for (text, style, link) in tokens {
+    for (text, style, link, field) in tokens {
         let w = text.width();
         if w == 0 {
             continue;
@@ -529,7 +608,7 @@ fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
             for g in text.graphemes(true) {
                 let gw = g.width().max(1);
                 if cw + gw > width && cw > 0 {
-                    line.push(Run { text: std::mem::take(&mut chunk), start: col, style, link });
+                    line.push(Run { text: std::mem::take(&mut chunk), start: col, style, link, field });
                     col += cw;
                     lines.push(std::mem::take(&mut line));
                     cw = 0;
@@ -538,7 +617,7 @@ fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
                 cw += gw;
             }
             if cw > 0 {
-                line.push(Run { text: chunk, start: col, style, link });
+                line.push(Run { text: chunk, start: col, style, link, field });
                 col += cw;
             }
             continue;
@@ -550,7 +629,7 @@ fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
                 continue;
             }
         }
-        line.push(Run { text, start: col, style, link });
+        line.push(Run { text, start: col, style, link, field });
         col += w;
     }
     if !line.is_empty() {
@@ -582,11 +661,44 @@ fn table_fallback(out: &mut Layout, table: &crate::dom::Table, indent: usize, op
                     code: false,
                     muted: true,
                     image: false,
+                    field: None,
                 });
             }
             pieces.extend(cell.pieces.iter().cloned());
         }
         let block = Block { kind: crate::dom::BlockKind::Paragraph, indent: 0, pieces };
         layout_flow(out, &block, " ".repeat(indent), opts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dom;
+
+    fn row_text(layout: &Layout, row: usize) -> String {
+        layout.rows[row].runs.iter().map(|r| r.text.as_str()).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn field_runs_are_addressable_by_cell() {
+        let doc = dom::parse("<p>name <input name=q value=ann> end</p>");
+        let out = layout(&doc, 40, 4, true);
+        let (row, end) = out.field_end(0).expect("field placement");
+        assert_eq!(row, 0);
+        assert_eq!(out.field_at(row, end - 1), Some(0), "the last cell of the field");
+        assert_eq!(out.field_at(row, end), None, "the caret parks just past it");
+        assert!(out.field_at(row, 0).is_none(), "plain text is not a field");
+        assert_eq!(row_text(&out, row), "name [ ann ] end");
+    }
+
+    #[test]
+    fn a_field_keeps_its_marker_when_the_row_wraps() {
+        let doc = dom::parse("<p>lorem ipsum dolor <input value=sit> consectetur</p>");
+        let out = layout(&doc, 12, 4, true);
+        assert!(out.len() > 1);
+        let placed = out.rows.iter().filter(|r| r.runs.iter().any(|run| run.field.is_some())).count();
+        assert_eq!(placed, 1, "the field must not be split across rows");
+        assert!(out.field_end(0).is_some());
     }
 }

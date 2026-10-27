@@ -4,21 +4,21 @@ expression: screen
 ---
  Design notes
 
- Some bold and italic text with a second page link, plus a
  ┌ w3b ───────────────────────────────────────────────────┐
  │w3b keys  (i or ? toggles this)                         │
  │  j / k          down, up        gg / G      top, bottom│
  │  h / l          left, right     0 ^ $       line edges │
  │  Ctrl-d / Ctrl-u  half page     PgDn/PgUp   full page  │
- │  Enter          follow link     r           reload     │
+ │  Enter          follow or edit  r           reload     │
  │  Tab            next link       Shift-Tab   prev. link │
  │  o or :         open url        /           search     │
  │  n / N          next/prev hit   Esc         cancel     │
  │  [ or Backspace back            ]           forward    │
  │  y              link target     w           toggle wrap│
+ │  g then ...     go-to menu                             │
+ │  in a field     typing edits, Esc or Enter is done     │
  │  q or Ctrl-c    quit            i or ?      this help  │
  └────────────────────────────────────────────────────────┘
-
  weird spacing here
 
- 200 OK  https://test.local/home — Design notes - w3b     0%
+ 200 OK  https://test.local/home — Design notes… 42 ms    0%

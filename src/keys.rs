@@ -8,9 +8,18 @@ impl App {
         if key.kind == ratatui::crossterm::event::KeyEventKind::Release {
             return Action::None;
         }
+        // Ctrl-c quits from anywhere, which is what the help screen promises.
+        if key.kind != ratatui::crossterm::event::KeyEventKind::Release
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c'))
+        {
+            self.quit = true;
+            return Action::Quit;
+        }
         self.clear_message();
         match self.mode {
             Mode::Open | Mode::Search => self.handle_input_key(key),
+            Mode::Field => self.handle_field_key(key),
             Mode::Help => {
                 self.mode = Mode::Normal;
                 Action::None
@@ -22,12 +31,13 @@ impl App {
     fn handle_normal_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let code = key.code;
+        // A `g` is waiting: whatever comes next is a go-to command.
+        if self.pending_g {
+            self.pending_g = false;
+            return self.handle_goto_key(code);
+        }
         let mut yanked: Option<String> = None;
         match code {
-            KeyCode::Char('c') if ctrl => {
-                self.quit = true;
-                return Action::Quit;
-            }
             KeyCode::Char('q') if !ctrl => {
                 self.quit = true;
                 return Action::Quit;
@@ -37,13 +47,8 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => self.left(),
             KeyCode::Char('l') | KeyCode::Right => self.right(),
             KeyCode::Char('g') => {
-                if self.pending_g {
-                    self.pending_g = false;
-                    self.to_top();
-                } else {
-                    self.pending_g = true;
-                    self.show_message("g… (gg for top)", false);
-                }
+                self.pending_g = true;
+                self.show_message("g… choose a command (Esc cancels)", false);
             }
             KeyCode::Char('G') => self.to_bottom(),
             KeyCode::Char('0') => self.line_start(),
@@ -82,6 +87,68 @@ impl App {
             Some(target) => Action::Yank(target),
             None => Action::None,
         }
+    }
+
+    /// The second half of a `g` command. See `GOTO_MENU`.
+    fn handle_goto_key(&mut self, code: KeyCode) -> Action {
+        match code {
+            KeyCode::Esc => {
+                self.message = None;
+            }
+            KeyCode::Char('g') => self.to_top(),
+            KeyCode::Char('e') => self.to_bottom(),
+            // Helix-style: `g o` out (back in history), `g i` in (forward).
+            KeyCode::Char('o') => self.go_back(),
+            KeyCode::Char('i') => self.go_forward(),
+            KeyCode::Char('u') => self.enter_input_mode(Mode::Open, String::new()),
+            KeyCode::Char('h') => self.open_home(),
+            KeyCode::Char('r') => self.reload(),
+            KeyCode::Char(c) => {
+                self.show_message(format!("g{c}: no such command (see the menu)"), true);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Keys while a form field has the caret. Everything printable goes into
+    /// the field; Enter and Esc finish, Backspace erases. w3b does not submit
+    /// forms, so Enter leaves the field with the text kept.
+    fn handle_field_key(&mut self, key: KeyEvent) -> Action {
+        let Some(index) = self.editing else {
+            self.leave_field();
+            return Action::None;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.leave_field();
+                self.message = None;
+            }
+            KeyCode::Backspace => {
+                let mut value = self.field_value(index);
+                value.pop();
+                self.commit_field(index, &value);
+            }
+            KeyCode::Char('w') if ctrl => {
+                let mut value = self.field_value(index);
+                while value.ends_with(' ') {
+                    value.pop();
+                }
+                while !value.is_empty() && !value.ends_with(' ') {
+                    value.pop();
+                }
+                self.commit_field(index, &value);
+            }
+            KeyCode::Char('u') if ctrl => self.commit_field(index, ""),
+            KeyCode::Char(c) if !ctrl => {
+                let mut value = self.field_value(index);
+                value.push(c);
+                self.commit_field(index, &value);
+            }
+            _ => {}
+        }
+        Action::None
     }
 
     fn handle_input_key(&mut self, key: KeyEvent) -> Action {

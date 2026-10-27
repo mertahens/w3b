@@ -33,6 +33,8 @@ pub struct Piece {
     pub muted: bool,
     /// An image placeholder such as `[alt text]`.
     pub image: bool,
+    /// Index into `Doc::fields`: the user can type into this piece.
+    pub field: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +62,41 @@ pub enum Align {
     Left,
     Center,
     Right,
+}
+
+/// Which kind of editable form control a `Field` stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    Input,
+    Textarea,
+}
+
+/// A text input or textarea. w3b does not submit forms, but text typed into a
+/// field belongs to the page: it is laid out and scrolled like any other text,
+/// so the value lives in the document and is re-flowed when it changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    pub kind: FieldKind,
+    /// The `name` attribute (or the input type) used when talking about it.
+    pub name: String,
+    /// Shown while the value is empty.
+    pub placeholder: String,
+    pub value: String,
+    /// Passwords are shown as dots; the real value is kept.
+    pub masked: bool,
+}
+
+impl Field {
+    /// What the page shows for this field.
+    pub fn display(&self) -> String {
+        if self.value.is_empty() {
+            format!("[ {} ]", self.placeholder)
+        } else if self.masked {
+            format!("[ {} ]", "\u{2022}".repeat(self.value.chars().count()))
+        } else {
+            format!("[ {} ]", self.value)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +133,8 @@ pub struct Doc {
     /// same-document links such as `#install` can jump instead of doing nothing.
     pub anchors: Vec<(String, usize)>,
     pub tables: Vec<Table>,
+    /// Text inputs and textareas, in document order.
+    pub fields: Vec<Field>,
 }
 
 const TABLE_TAGS: &[&str] = &["table", "tr", "td", "th"];
@@ -188,6 +227,7 @@ struct Ctx {
     code: bool,
     muted: bool,
     image: bool,
+    field: Option<usize>,
 }
 
 #[derive(Default)]
@@ -312,14 +352,45 @@ impl Builder {
                 self.pending_block = Some(kind);
             }
             "img" => {
-                let alt = node.value().as_element().and_then(|e| e.attr("alt")).unwrap_or("").trim();
-                if !alt.is_empty() {
-                    self.push_piece(format!("[{}]", collapse(alt)), |c| c.image = true);
+                // `[img: alt]`, falling back to the file name so an image
+                // without alt text still says what it is.
+                let el = match node.value().as_element() {
+                    Some(el) => el,
+                    None => return,
+                };
+                let alt = el.attr("alt").unwrap_or("").trim();
+                let label = if alt.is_empty() {
+                    el.attr("src")
+                        .unwrap_or("")
+                        .split('?')
+                        .next()
+                        .unwrap_or("")
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    alt.to_string()
+                };
+                let label = collapse(&label);
+                if !label.is_empty() {
+                    self.push_piece(format!("[img: {label}]"), |c| c.image = true);
                 }
             }
             "input" | "textarea" | "select" | "button" => {
                 // The label is the element's own text, so its children are not walked.
-                self.push_piece(field_label(node), |c| c.muted = true);
+                // Text inputs and textareas become editable fields.
+                if let Some(field) = field_of(node) {
+                    let index = self.doc.fields.len();
+                    let text = field.display();
+                    self.doc.fields.push(field);
+                    self.push_piece(text, |c| {
+                        c.muted = true;
+                        c.field = Some(index);
+                    });
+                } else {
+                    self.push_piece(field_label(node), |c| c.muted = true);
+                }
                 self.ws = true;
                 walk_children = false;
             }
@@ -515,6 +586,7 @@ impl Builder {
             code: ctx.code,
             muted: ctx.muted,
             image: ctx.image,
+            field: ctx.field,
         });
     }
 
@@ -575,6 +647,7 @@ fn plain(ctx: Ctx) -> Piece {
         code: ctx.code,
         muted: ctx.muted,
         image: ctx.image,
+        field: ctx.field,
     }
 }
 
@@ -590,6 +663,48 @@ fn identity_of(node: NodeRef<'_, Node>, name: &str) -> css::Identity {
 
 fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The controls w3b lets the user type into. Everything else (checkboxes,
+/// radios, buttons, selects, file pickers) keeps its static label, because w3b
+/// does not submit forms.
+fn field_of(node: NodeRef<'_, Node>) -> Option<Field> {
+    let el = node.value().as_element()?;
+    if !matches!(el.name(), "input" | "textarea") {
+        return None;
+    }
+    let name = el.attr("name").unwrap_or("").trim().to_string();
+    if el.name() == "textarea" {
+        // A textarea's content is its default value.
+        let value = collapse(&collect_text(node));
+        return Some(Field {
+            kind: FieldKind::Textarea,
+            name: if name.is_empty() { "message".to_string() } else { name },
+            placeholder: "textarea".to_string(),
+            value,
+            masked: false,
+        });
+    }
+    let ty = el.attr("type").unwrap_or("text").to_ascii_lowercase();
+    let masked = match ty.as_str() {
+        "text" | "search" | "email" | "url" | "tel" | "number" => false,
+        "password" => true,
+        _ => return None,
+    };
+    let placeholder = el.attr("placeholder").map(collapse).filter(|p| !p.is_empty()).unwrap_or_else(|| {
+        if ty == "password" {
+            "password".to_string()
+        } else {
+            "input".to_string()
+        }
+    });
+    Some(Field {
+        kind: FieldKind::Input,
+        name: if name.is_empty() { ty } else { name },
+        placeholder,
+        value: el.attr("value").map(collapse).unwrap_or_default(),
+        masked,
+    })
 }
 
 fn field_label(node: NodeRef<'_, Node>) -> String {
@@ -781,10 +896,45 @@ mod tests {
     }
 
     #[test]
+    fn text_inputs_and_textareas_become_editable_fields() {
+        let doc = parse(
+            "<form><input name=\"q\" placeholder=\"search\"><input type=\"password\">\
+             <textarea>hello there</textarea><input type=\"checkbox\"><button>Go</button>",
+        );
+        assert_eq!(doc.fields.len(), 3, "checkboxes and buttons are not text fields");
+        assert_eq!(doc.fields[0].name, "q");
+        assert_eq!(doc.fields[0].placeholder, "search");
+        assert!(doc.fields[1].masked, "a password field masks its value");
+        assert_eq!(doc.fields[2].kind, FieldKind::Textarea);
+        assert_eq!(doc.fields[2].value, "hello there", "a textarea's content is its default value");
+        let marked: Vec<(usize, &str)> = doc
+            .blocks
+            .iter()
+            .flat_map(|b| b.pieces.iter())
+            .filter_map(|p| p.field.map(|i| (i, p.text.as_str())))
+            .collect();
+        assert_eq!(marked, vec![(0, "[ search ]"), (1, "[ password ]"), (2, "[ hello there ]")]);
+    }
+
+    #[test]
+    fn a_value_prefills_a_field_and_a_password_is_shown_as_dots() {
+        let doc = parse("<input value=\"draft one\"><input type=password value=\"ab\">");
+        assert_eq!(doc.fields.len(), 2);
+        assert_eq!(doc.fields[0].value, "draft one");
+        assert_eq!(doc.fields[0].display(), "[ draft one ]");
+        assert_eq!(doc.fields[1].display(), "[ \u{2022}\u{2022} ]");
+        assert_eq!(doc.fields[1].value, "ab", "the real value is kept, only the display masks");
+    }
+
+    #[test]
     fn img_alt_and_form_fields_become_placeholders() {
         let doc = parse("<img src=\"x.png\" alt=\"logo\"><input type=\"checkbox\"><button>Send</button>");
         let all: String = doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
-        assert_eq!(all, "[logo][ ] [ Send ]");
+        assert_eq!(all, "[img: logo][ ] [ Send ]");
+        let doc = parse("<img src=\"/img/logo.png?v=2\"><img alt=\"\">");
+        let all: Vec<String> =
+            doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.clone())).collect();
+        assert_eq!(all, vec!["[img: logo.png]"], "no alt falls back to the file name");
     }
 
     #[test]

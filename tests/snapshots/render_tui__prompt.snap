@@ -9,4 +9,4 @@ expression: screen
 
 
 :open example.com/path
- 200 OK  https://test.local/home — home                 100%
+ 200 OK  https://test.local/home — home          42 ms  100%

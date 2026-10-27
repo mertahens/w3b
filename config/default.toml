@@ -47,8 +47,10 @@ italic = true
 # Image placeholders, rendered as [alt text].
 # Elements that ask for a monospace font (code, pre, kbd, or CSS
 # font-family: monospace). The background spans the whole line.
+# Elements that ask for a monospace font (code, pre, kbd, a monospace
+# font-family). The background covers the text itself, not the whole line.
 [style.monospace]
-bg = "gray"
+bg = "#555555"
 
 [style.image]
 fg = "black"
@@ -158,3 +160,5 @@ yank_to_clipboard = true
 # hidden drop elements, font-family: monospace marks code. This caps how many
 # linked sheets are fetched. 0 fetches none.
 max_stylesheets = 4
+# Show how long the page took to fetch, on the right of the status line.
+show_load_time = true

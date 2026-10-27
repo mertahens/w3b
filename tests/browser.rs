@@ -2,7 +2,7 @@
 //! search and the status line. Driven through FakeFetcher, so no network.
 mod common;
 
-use common::{fake_app, fixture, key, press, type_str};
+use common::{char_key, ctrl, fake_app, fixture, key, press, type_str};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use w3b::app::Mode;
 use w3b::error::NetError;
@@ -57,6 +57,62 @@ fn gg_and_capital_g_jump_to_the_ends() {
     assert_eq!(app.view.cursor.row, 0);
     app.handle_key(key(KeyCode::Char('G')));
     assert_eq!(app.view.cursor.row, app.rows().len() - 1);
+}
+
+#[test]
+fn the_g_menu_waits_for_a_command_and_can_be_cancelled() {
+    let mut app = fake_app(home_fetcher(), HOME, 40, 10);
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.goto_menu_open(), "a lone g opens the menu");
+    assert!(app.message.as_ref().expect("hint message").text.contains('g'));
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.goto_menu_open(), "Escape closes the menu");
+    assert!(app.message.is_none(), "cancelling leaves no message behind");
+}
+
+#[test]
+fn ge_goes_to_the_end_of_the_page() {
+    let mut app = fake_app(home_fetcher(), HOME, 40, 10);
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.view.cursor.row, app.rows().len() - 1);
+    assert!(!app.goto_menu_open(), "the menu closes when the command runs");
+}
+
+#[test]
+fn gu_lets_you_type_a_url_in_the_status_line() {
+    let mut app = fake_app(home_fetcher(), HOME, 40, 10);
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('u'));
+    assert_eq!(app.mode, Mode::Open, "the url prompt is open");
+    type_str(&mut app, "https://test.local/second");
+    press(&mut app, KeyCode::Enter);
+    app.settle();
+    assert_eq!(app.page.url, "https://test.local/second");
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn gh_opens_the_home_page() {
+    let mut app = fake_app(home_fetcher(), "https://test.local/second", 40, 10);
+    app.config.behavior.home_url = HOME.to_string();
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('h'));
+    app.settle();
+    assert_eq!(app.page.url, HOME);
+}
+
+#[test]
+fn an_unknown_command_after_g_says_so_and_closes_the_menu() {
+    let mut app = fake_app(home_fetcher(), HOME, 40, 10);
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('x'));
+    let message = app.message.clone().expect("a message about gx");
+    assert!(message.error, "an unknown command is an error");
+    assert!(message.text.contains("gx"), "{}", message.text);
+    assert!(!app.goto_menu_open());
+    // The key is not passed through to normal handling either.
+    assert_eq!(app.view.cursor.row, 0);
 }
 
 #[test]
@@ -301,8 +357,12 @@ fn anchor_links_jump_within_the_page() {
     let fetcher = FakeFetcher::new().with_html("https://test.local/anchors", 200, html);
     let mut app = fake_app(fetcher, "https://test.local/anchors", 60, 16);
 
+    // The cursor opens on the first link; standing on it and pressing Enter is
+    // all a same-document jump needs.
+    let p = app.page.layout.links[0];
+    app.view.cursor.row = p.row;
+    app.view.cursor.col = p.start;
     let start = app.view.cursor.row;
-    press(&mut app, KeyCode::Tab); // the #tips link
     press(&mut app, KeyCode::Enter);
 
     let landed = app.view.cursor.row;
@@ -321,4 +381,238 @@ fn anchor_links_jump_within_the_page() {
     assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("no #nope on this page"));
     assert_eq!(app.message.as_ref().map(|m| m.error), Some(true));
     assert_eq!(app.view.cursor.row, before, "a missing anchor leaves the cursor alone");
+}
+
+// --- typing into form fields ------------------------------------------------
+
+const FORM: &str = "https://test.local/form";
+
+fn form_app(html: &str) -> w3b::app::App {
+    fake_app(FakeFetcher::new().with_html(FORM, 200, html), FORM, 60, 16)
+}
+
+fn row_text(app: &w3b::app::App, row: usize) -> String {
+    app.rows()[row].runs.iter().map(|r| r.text.as_str()).collect::<String>()
+}
+
+fn page_text(app: &w3b::app::App) -> String {
+    (0..app.rows().len()).map(|i| row_text(app, i)).collect::<Vec<_>>().join("\n")
+}
+
+/// Park the cursor on the last cell of a field, the way a user would.
+fn point_at_field(app: &mut w3b::app::App, index: usize) {
+    let (row, end) = app.page.layout.field_end(index).expect("the field is on screen");
+    app.view.cursor.row = row;
+    app.view.cursor.col = end - 1;
+}
+
+#[test]
+fn enter_opens_the_field_under_the_cursor_for_typing() {
+    let mut app = form_app("<h1>Search</h1><p>q <input name=q value=ann></p>");
+    point_at_field(&mut app, 0);
+    assert_eq!(app.field_under_cursor(), Some(0));
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Field);
+    assert_eq!(app.editing, Some(0));
+    assert!(app.message.as_ref().expect("a note").text.contains("typing in q"));
+
+    type_str(&mut app, "nab");
+    assert_eq!(app.page.field_value(0), Some("annnab"));
+    assert!(page_text(&app).contains("[ annnab ]"), "{}", page_text(&app));
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.editing, None);
+    assert_eq!(app.page.field_value(0), Some("annnab"), "Enter keeps what was typed");
+}
+
+#[test]
+fn editing_a_field_is_append_only_and_leaves_the_page_alone() {
+    let mut app = form_app("<p>one</p><p>two</p><p>three</p><p>q <input></p>");
+    point_at_field(&mut app, 0);
+    let scroll = app.view.scroll;
+
+    press(&mut app, KeyCode::Enter);
+    // j and k type instead of scrolling while a field has the caret.
+    type_str(&mut app, "jk");
+    assert_eq!(app.page.field_value(0), Some("jk"));
+    assert_eq!(app.view.scroll, scroll, "the page did not scroll");
+
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.page.field_value(0), Some("j"));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.page.field_value(0), Some("j"));
+}
+
+#[test]
+fn a_password_field_shows_dots_but_keeps_its_value() {
+    let mut app = form_app("<p><input type=password></p>");
+    point_at_field(&mut app, 0);
+    press(&mut app, KeyCode::Enter);
+    type_str(&mut app, "s3cr3t");
+    assert_eq!(app.page.field_value(0), Some("s3cr3t"));
+    let dots = "\u{2022}".repeat(6);
+    assert!(page_text(&app).contains(&format!("[ {dots} ]")), "{}", page_text(&app));
+    assert!(!page_text(&app).contains("s3cr3t"), "the password is not echoed");
+    app.handle_key(ctrl(KeyCode::Char('u')));
+    assert_eq!(app.page.field_value(0), Some(""));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn a_field_being_edited_is_left_behind_when_the_page_changes() {
+    let mut app = fake_app(
+        FakeFetcher::new().with_html(FORM, 200, "<p><a href=\"/second\">next</a> <input></p>").with_html(
+            "https://test.local/second",
+            200,
+            "<h1>Second</h1><p>other page</p>",
+        ),
+        FORM,
+        60,
+        16,
+    );
+    point_at_field(&mut app, 0);
+    press(&mut app, KeyCode::Enter);
+    type_str(&mut app, "half typed");
+    assert_eq!(app.mode, Mode::Field);
+
+    // Any navigation drops the edit: values belong to the page they came from.
+    app.navigate("https://test.local/second");
+    app.settle();
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.editing, None);
+    assert!(app.page.doc.fields.is_empty(), "the new page has no fields");
+}
+
+#[test]
+fn y_without_a_link_yanks_the_page_url() {
+    let mut app = form_app("<h1>Plain</h1><p>nothing to click here</p>");
+    app.view.cursor.row = 1;
+    app.view.cursor.col = 0;
+    assert_eq!(app.link_under_cursor(), None);
+    let action = press(&mut app, KeyCode::Char('y'));
+    assert_eq!(action, w3b::Action::Yank(FORM.to_string()));
+    assert_eq!(app.message.as_ref().expect("a note").text, format!("yanked: {FORM}"));
+}
+
+#[test]
+fn a_loading_page_shows_a_spinner_that_turns() {
+    let mut app = fake_app(
+        FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")).with_html(
+            "https://test.local/slow",
+            200,
+            "<h1>Slow</h1><p>later</p>",
+        ),
+        HOME,
+        70,
+        24,
+    );
+    app.navigate("https://test.local/slow");
+    assert!(app.is_loading());
+    let first = app.spinner_glyph();
+    app.tick();
+    assert_ne!(first, app.spinner_glyph(), "the animation advances");
+    assert_eq!(app.load_time_text().as_deref(), Some("\u{2026}"), "the clock is still running");
+    app.settle();
+    assert!(!app.is_loading());
+    let took = app.load_time_text().expect("a finished fetch reports its time");
+    assert!(took.ends_with("ms") || took.ends_with('s'), "{took}");
+}
+
+#[test]
+fn g_o_and_g_i_walk_the_history() {
+    let fetcher = FakeFetcher::new()
+        .with_html(HOME, 200, "<h1>Home</h1><p><a href=\"/second\">onward</a></p>")
+        .with_html("https://test.local/second", 200, "<h1>Second</h1><p>other page</p>");
+    let mut app = fake_app(fetcher, HOME, 60, 16);
+    assert_eq!(app.url(), HOME);
+
+    // Out: `Tab` to the link, Enter to follow it, then `g o` to come back.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Enter);
+    app.settle();
+    assert_eq!(app.url(), "https://test.local/second");
+
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.goto_menu_open());
+    press(&mut app, KeyCode::Char('o'));
+    app.settle();
+    assert_eq!(app.url(), HOME, "g o went back");
+
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('i'));
+    app.settle();
+    assert_eq!(app.url(), "https://test.local/second", "g i went forward");
+
+    // At the far end of history `g i` says so rather than doing something odd.
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.message.as_ref().expect("a note").text, "no next page");
+    assert!(!app.goto_menu_open(), "the menu closed either way");
+}
+
+#[test]
+fn tab_walks_links_and_fields_in_reading_order() {
+    let html =
+        "<p><a href=\"/first\">first link</a> then <input name=one> then <a href=\"/last\">last link</a></p>";
+    let mut app = form_app(html);
+    assert_eq!(app.page.doc.fields.len(), 1);
+    assert_eq!(app.link_under_cursor(), Some(0), "the cursor opens on the first link");
+
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.field_under_cursor(), Some(0), "tab reached the field");
+    let field_spot = (app.view.cursor.row, app.view.cursor.col);
+
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.link_under_cursor(), Some(1), "tab reached the last link");
+    assert!(field_spot < (app.view.cursor.row, app.view.cursor.col), "walking forward");
+
+    // Past the last item there is nowhere to go, and it says so.
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.message.as_ref().expect("a note").text, "no more links or fields");
+
+    // Back over the field, and Enter starts typing in it.
+    press(&mut app, KeyCode::BackTab);
+    assert_eq!(app.field_under_cursor(), Some(0), "shift-tab came back to the field");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Field);
+    type_str(&mut app, "typed");
+    assert_eq!(app.page.field_value(0), Some("typed"));
+    press(&mut app, KeyCode::Esc);
+
+    // Walking off the front reports it too.
+    let mut back = form_app(html);
+    back.view.cursor.row = field_spot.0;
+    back.view.cursor.col = field_spot.1 - 1;
+    press(&mut back, KeyCode::BackTab);
+    assert_eq!(back.link_under_cursor(), Some(0));
+    press(&mut back, KeyCode::BackTab);
+    assert_eq!(back.message.as_ref().expect("a note").text, "no more links or fields");
+}
+
+#[test]
+fn load_times_are_formatted_by_size() {
+    let mut app = form_app("<h1>Timed</h1>");
+    for (ms, want) in [(0, "0 ms"), (999, "999 ms"), (1000, "1.0s"), (1500, "1.5s"), (60_000, "60.0s")] {
+        app.page.load_ms = Some(ms);
+        assert_eq!(app.load_time_text().as_deref(), Some(want), "{ms} ms");
+    }
+    app.page.load_ms = None;
+    assert_eq!(app.load_time_text(), None, "a page w3b wrote itself has no time");
+}
+
+#[test]
+fn ctrl_c_quits_from_a_field_but_q_only_types() {
+    let mut app = form_app("<p><input name=\"n\"></p><p><a href=\"/x\">x</a></p>");
+    // The cursor opens on the field, so Enter starts typing straight away.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Field);
+    app.handle_key(char_key('q'));
+    assert!(!app.quit, "q is just a letter while typing");
+    assert_eq!(app.field_value(app.editing.expect("the field")), "q");
+    app.handle_key(ctrl(KeyCode::Char('c')));
+    assert!(app.quit, "Ctrl-c works in every mode");
 }

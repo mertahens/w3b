@@ -148,6 +148,13 @@ pub fn fake_app(fetcher: FakeFetcher, start_url: &str, width: usize, height: usi
     app
 }
 
+/// App as it looks the instant it starts: no fetch finished yet.
+pub fn loading_app(fetcher: FakeFetcher, start_url: &str, width: usize, height: usize) -> App {
+    let config = w3b::config::built_in_defaults();
+    let theme = Theme::build(&config).expect("theme");
+    App::empty(config, theme, Arc::new(fetcher), start_url, Viewport { width, height })
+}
+
 pub fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }

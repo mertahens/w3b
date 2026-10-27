@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import signal
 import pty
 import re
 import struct
@@ -31,10 +32,16 @@ PAGE = b"""<!doctype html>
 <p class="secret">SECRET-NEVER-SHOWN</p>
 <table><tr><th>Tool</th><th>Stars</th></tr><tr><td>w3b</td><td>12</td></tr></table>
 <p>with <code>code-text</code> and <span class="term">term-text</span> inline.</p>
+<p><img src="/img/logo.png" alt="logo"></p>
 <a href="/second">the second page</a>
 </body></html>
 """
-SECOND = b"<html><head><title>Second</title></head><body><p>second page body</p></body></html>"
+SECOND = (
+    b"<html><head><title>Second</title></head><body>"
+    b"<p>second page body</p>"
+    b'<p>search: <input name="q" value="typed-in"></p>'
+    b"</body></html>"
+)
 
 LAST = {"path": "/"}
 
@@ -81,7 +88,10 @@ def main() -> int:
     # Give the child a real terminal size.
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
-    keys = [b"j", b"j", b"l", b"\t", b"\r"]  # move, move, right, next link, follow
+    # Move, move, hover the link target, Tab onto it, follow it.
+    keys = [b"j", b"j", b"l", b"\t", b"\r"]
+    # On page two: Tab onto the form field, Enter to type, then a character.
+    typing = [b"\t", b"\r", b"X"]
     transcript = bytearray()
     deadline = time.time() + 15.0
     stage = 0
@@ -108,6 +118,16 @@ def main() -> int:
                 time.sleep(0.15)
         elif stage == 1 and b"second page body" in plain:
             stage = 2
+            for key in typing:
+                os.write(fd, key)
+                time.sleep(0.15)
+        # A diff write repaints only what changed, so the typed letter shows up
+        # as the tail of the field: the letter, then the closing bracket.
+        elif stage == 2 and b"X ]" in plain:
+            stage = 3
+            # Escape leaves the field (q there would only type), then quit.
+            os.write(fd, b"\x1b")
+            time.sleep(0.3)
             quit_sent = True
             os.write(fd, b"q")
         if quit_sent:
@@ -118,7 +138,9 @@ def main() -> int:
     # Make sure the child is gone and we have read its final frame, so the
     # leave-alternate-screen sequence is part of the transcript.
     try:
+        # ESC on its own: ESC followed straight by a letter reads as Alt.
         os.write(fd, b"\x1b")
+        time.sleep(0.3)
         os.write(fd, b"q")
     except OSError:
         pass
@@ -139,10 +161,26 @@ def main() -> int:
         if done:
             status = waited
             break
-    try:
-        _, status = os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
+    # Never wait forever: a w3b that ignores q is a bug to report, not a harness
+    # that hangs.
+    stuck = False
+    exit_by = time.time() + 3
+    while time.time() < exit_by:
+        try:
+            done, waited = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if done:
+            status = waited
+            break
+        time.sleep(0.05)
+    else:
+        stuck = True
+        os.kill(pid, signal.SIGKILL)
+        try:
+            _, status = os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
     os.close(fd)
     server.shutdown()
     server.server_close()
@@ -157,6 +195,16 @@ def main() -> int:
     for needle in (b"Pty heading", b"the second page", b"200", b"second page body"):
         if needle not in raw and needle not in plain:
             problems.append(f"never rendered {needle!r}")
+    for needle in (b"[img: logo]", b"[ typed-in ]", b"[ typing in q", b"X ]"):
+        if needle not in plain:
+            problems.append(f"never rendered {needle!r}")
+    # The monospace background is the dark grey from the shipped config, and it
+    # covers the text rather than the whole line.
+    if b"48;2;85;85;85" not in raw:
+        problems.append("no dark grey (rgb 85,85,85) background was painted")
+    # w3b must not flash an error page on its way to the first frame.
+    if b"ERROR" in plain:
+        problems.append("an ERROR page was painted at some point")
     for needle in (b"Tool", b"Stars", b"code-text", b"term-text"):
         if needle not in plain:
             problems.append(f"page content {needle!r} never reached the screen")
@@ -168,10 +216,16 @@ def main() -> int:
     grid = plain.decode("utf-8", "replace").replace("\ufffd", "")
     if "\u250c" not in grid and "\u2502" not in grid:
         problems.append("no box-drawing table border in the output")
+    if stage < 3:
+        problems.append(f"the field was never typed into (stages reached: {stage})")
     if LAST["path"] == "/":
         problems.append("Enter on a link never issued a request")
+    if stuck:
+        problems.append("w3b was still running 3s after q")
     if not os.waitstatus_to_exitcode(status) == 0:
         problems.append(f"exit code {os.waitstatus_to_exitcode(status)}")
+
+
 
     print(f"transcript: {len(raw)} bytes, stages reached: {stage}")
     if problems:
