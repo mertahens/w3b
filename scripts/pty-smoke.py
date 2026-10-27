@@ -214,11 +214,12 @@ def main() -> int:
     for needle in (b"Tool", b"Stars", b"code-text", b"term-text"):
         if needle not in plain:
             problems.append(f"page content {needle!r} never reached the screen")
-    # Hovering must highlight the whole link, not the word under the cursor.
-    # Cells that share a style are written as one run, so one run of the link's
-    # own text in the hover colour (bg 7) proves it.  The cursor sits on the
-    # link's first letter, so the run starts at its second.
-    if not re.search(rb"48;5;7m[ -~]*second page", raw):
+    # Hovering must highlight the whole link, not the word under the cursor, and
+    # with the shipped colours: the link's own colour (blue, index 4) as the
+    # background and black ink.  Cells that share a style are written as one run,
+    # so one run of the link's text in that style proves both.  The cursor sits on
+    # the link's first letter, so the run starts at its second.
+    if not re.search(rb"38;5;0;48;5;4m[ -~]*second page", raw):
         problems.append("the hover highlight did not cover the whole link text")
     if b"SECRET-NEVER-SHOWN" in plain or b"SECRET-MEDIA-HIDDEN" in plain:
         problems.append("an element hidden by display/visibility was rendered")

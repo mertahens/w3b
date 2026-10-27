@@ -478,3 +478,11 @@ fn a_link_that_wraps_is_highlighted_on_every_row_it_covers() {
         );
     }
 }
+
+#[test]
+fn the_shipped_hover_paints_the_link_colour_behind_black_ink() {
+    let app = fake_app(FakeFetcher::new().with_html(HOME, 200, "<p><a href=\"/x\">x</a></p>"), HOME, 60, 16);
+    assert_eq!(app.theme.link.fg, Some(Color::Blue), "links are blue");
+    assert_eq!(app.theme.hovered_link.bg, app.theme.link.fg, "hover moves that blue to the background");
+    assert_eq!(app.theme.hovered_link.fg, Some(Color::Black), "and the ink goes black");
+}

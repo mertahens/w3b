@@ -58,10 +58,10 @@ bg = "magenta"
 italic = true
 
 # The link the cursor is standing on, drawn under the cursor cell.
+# The link under the cursor: the link colour moves from the ink to the background.
 [style.hovered_link]
 fg = "black"
-bg = "gray"
-underline = true
+bg = "blue"
 
 # --- cursor ---------------------------------------------------------------
 # cursor_line tints the whole row the cursor sits on; cursor is the cell.

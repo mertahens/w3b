@@ -100,8 +100,11 @@ navigating away starts over. Nothing is submitted (see
 [Not implemented](#not-implemented-on-purpose-for-now)).
 
 Mouse wheel and left-click work too; disable with `mouse = false`. The link the
-cursor stands on is highlighted with `[style.hovered_link]` and its target is
-shown in the status line as `-> url`.
+cursor stands on is highlighted with `[style.hovered_link]` — the link colour
+moves from the ink to the background, with black text — and its target is shown
+in the status line as `-> url`. The cursor is not tied to the length of its line:
+`h`/`l` and `j`/`k` carry it anywhere across the width of the page, so it keeps
+its column over short lines.
 
 ## Configuration
 
@@ -131,7 +134,7 @@ divider = { fg = "dark_gray" }
 placeholder = { fg = "dark_gray", italic = true }
 image = { fg = "black", bg = "magenta", italic = true }
 monospace = { fg = "#f5f5f5", bg = "#141414" }
-hovered_link = { fg = "black", bg = "gray", underline = true }
+hovered_link = { fg = "black", bg = "blue" }
 cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
 search_match = { bg = "yellow", fg = "black" }
