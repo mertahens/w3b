@@ -405,3 +405,72 @@ fn scrollbar_appears_only_when_configured() {
     assert_ne!(plain, with_bar, "the scrollbar changes the output");
     assert!(with_bar.lines().last().unwrap_or_default().contains('│') || with_bar.contains('█'));
 }
+
+#[test]
+fn the_hover_highlight_covers_the_whole_link() {
+    let url = "https://test.local/hover";
+    let html = "<p>see <a href=\"/x\">the first long link</a> and stop</p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(url, 200, html), url, 60, 12);
+    let row = &app.rows()[0];
+    let start = row.runs.iter().find(|r| r.text == "the").expect("run").start;
+    let end = row.runs.iter().find(|r| r.text == "link").expect("last link word").end();
+    app.view.cursor.row = 0;
+    app.view.cursor.col = start + 1;
+    let buf = draw_buffer(&app, 60, 12);
+    let hovered = app.theme.hovered_link.bg.expect("hover background");
+    for col in start..end {
+        if col == app.view.cursor.col {
+            continue; // the cursor cell is painted on top of the hover
+        }
+        let x = (app.padding_x() as u16) + col as u16;
+        assert_eq!(
+            // The page starts at screen row 0; the status line is at the bottom.
+            buf.cell((x, 0)).expect("cell").style().bg,
+            Some(hovered),
+            "column {col} of the link should be highlighted"
+        );
+    }
+    // Words outside the link keep the plain background.
+    let after = app.rows()[0].runs.iter().find(|r| r.text == "and").expect("plain word");
+    assert_ne!(
+        buf.cell(((app.padding_x() as u16 + after.start as u16), 0)).expect("cell").style().bg,
+        Some(hovered),
+        "a word outside the link must not be highlighted"
+    );
+}
+
+#[test]
+fn a_link_that_wraps_is_highlighted_on_every_row_it_covers() {
+    let url = "https://test.local/wrap";
+    let html = "<p>prefix <a href=\"/x\">alpha beta gamma delta epsilon</a></p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(url, 200, html), url, 20, 12);
+    let link_rows: Vec<usize> = app
+        .page
+        .layout
+        .links
+        .iter()
+        .map(|p| p.row)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert!(link_rows.len() > 1, "the fixture link should wrap at width 20, rows: {link_rows:?}");
+    let first = app.page.layout.links.first().expect("a link placement");
+    app.view.cursor.row = first.row;
+    app.view.cursor.col = first.start;
+    let hovered = app.theme.hovered_link.bg.expect("hover background");
+    let buf = draw_buffer(&app, 20, 12);
+    for placement in &app.page.layout.links {
+        if placement.row == app.view.cursor.row && placement.start == app.view.cursor.col {
+            continue; // the cursor cell is painted on top of the hover
+        }
+        let x = app.padding_x() as u16 + placement.start as u16;
+        let y = (placement.row - app.view.scroll) as u16;
+        assert_eq!(
+            buf.cell((x, y)).expect("cell").style().bg,
+            Some(hovered),
+            "the link placement on row {} col {} should be highlighted",
+            placement.row,
+            placement.start
+        );
+    }
+}

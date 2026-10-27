@@ -97,7 +97,16 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
     let pad = app.padding_x();
     let visible_height = usize::from(area.height);
     // The link the cursor stands on, so it can get a background of its own.
-    let hovered = app.placement_at(app.view.cursor.row, app.view.cursor.col).map(|p| (p.row, p.start, p.end));
+    // The highlight covers the whole link element, not the word the cursor
+    // happens to sit on: one link is one target even when it wraps rows.
+    let hovered: Vec<(usize, usize, usize)> = app
+        .page
+        .layout
+        .link_at(app.view.cursor.row, app.view.cursor.col)
+        .map(|link| {
+            app.page.layout.links.iter().filter(|p| p.link == link).map(|p| (p.row, p.start, p.end)).collect()
+        })
+        .unwrap_or_default();
 
     for (i, row) in app.page.layout.rows.iter().enumerate().skip(top).take(visible_height) {
         let y = area.y + (i - top) as u16;
@@ -128,10 +137,8 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
                     let cell = &mut buf[(area.x + x as u16, y)];
                     cell.set_symbol(g);
                     let mut s = style;
-                    if let Some((row, start, end)) = hovered {
-                        if row == i && col >= start && col < end {
-                            s = s.patch(app.theme.hovered_link);
-                        }
+                    if hovered.iter().any(|(row, start, end)| *row == i && col >= *start && col < *end) {
+                        s = s.patch(app.theme.hovered_link);
                     }
                     if let Some(hits) = hits {
                         if hits.iter().any(|(start, end)| col >= *start && col < *end) {
