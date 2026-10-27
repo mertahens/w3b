@@ -1006,4 +1006,37 @@ mod tests {
         assert!(row_text(laid.block_rows[1]).contains("Install"));
         assert!(row_text(laid.block_rows[4]).contains("one"));
     }
+
+    #[test]
+    fn every_display_none_spelling_takes_the_subtree_with_it() {
+        let cases = [
+            ("inline", "<div style=\"display:none\">gone<b>deeper</b></div><p>keep</p>", ""),
+            (
+                "inline upper case and important",
+                "<div style=\"DISPLAY: NONE !important\">gone<b>deeper</b></div><p>keep</p>",
+                "",
+            ),
+            (
+                "rule in upper case",
+                "<div class=\"ad\">gone<b>deeper</b></div><p>keep</p>",
+                ".ad { DISPLAY: NONE }",
+            ),
+            (
+                "important rule beats an inline override",
+                "<div class=\"ad\" style=\"display:block\">gone<b>deeper</b></div><p>keep</p>",
+                ".ad { display: none !important }",
+            ),
+            ("hidden attribute", "<div hidden>gone<b>deeper</b></div><p>keep</p>", ""),
+        ];
+        for (label, html, sheet) in cases {
+            let doc = parse_with_css(html, &css::parse(sheet));
+            let text: String =
+                doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
+            assert!(
+                !text.contains("gone") && !text.contains("deeper"),
+                "{label}: hidden text survived: {text:?}"
+            );
+            assert!(text.contains("keep"), "{label}: the visible element vanished: {text:?}");
+        }
+    }
 }

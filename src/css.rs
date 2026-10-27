@@ -23,7 +23,15 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub selectors: Vec<Selector>,
-    pub declarations: BTreeMap<String, String>,
+    pub declarations: BTreeMap<String, Declaration>,
+}
+
+/// One `property: value` pair, with `!important` remembered rather than
+/// dropped, because it decides which declaration wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declaration {
+    pub value: String,
+    pub important: bool,
 }
 
 /// One compound selector, such as `div.note` or `#main`.
@@ -201,19 +209,25 @@ fn add_block(sheet: &mut Sheet, prelude: &str, body: &str) {
 }
 
 /// Split `text` into declarations, dropping bad ones.
-pub fn parse_declarations(text: &str) -> BTreeMap<String, String> {
+pub fn parse_declarations(text: &str) -> BTreeMap<String, Declaration> {
     let mut out = BTreeMap::new();
     for entry in text.split(';') {
-        let Some((name, value)) = entry.split_once(':') else { continue };
+        let Some((name, raw)) = entry.split_once(':') else { continue };
         let name = name.trim().to_ascii_lowercase();
-        let value = value.trim().trim_start_matches("!important").trim().to_string();
+        let raw = raw.trim();
+        // `!important` trails the value and may be spelled in any case.
+        let (value, important) = match raw.rfind('!') {
+            Some(at) if raw[at + 1..].trim().eq_ignore_ascii_case("important") => (raw[..at].trim(), true),
+            _ => (raw, false),
+        };
+        let value = value.to_string();
         if name.is_empty() || value.is_empty() {
             continue;
         }
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             continue;
         }
-        out.insert(name, value);
+        out.insert(name, Declaration { value, important });
     }
     out
 }
@@ -376,16 +390,18 @@ impl Sheet {
         self.rules.len()
     }
 
-    /// Winning declaration for `property`; an inline `style="..."` wins.
+    /// Winning declaration for `property`. Specificity decides, a tie goes to
+    /// the later source, an inline `style="..."` is the most specific author
+    /// declaration, and `!important` outranks all of it - as in CSS.
     pub fn value(&self, t: &Target<'_>, property: &str, inline: Option<&str>) -> Option<String> {
-        if let Some(inline) = inline {
-            if let Some(value) = parse_declarations(inline).get(property) {
-                return Some(value.clone());
-            }
-        }
-        let mut best: Option<((u32, u32, u32), &str)> = None;
+        let property = property.trim().to_ascii_lowercase();
+        let mut best: Option<((u32, u32, u32), bool, String)> = None;
+        let wins = |best: &Option<((u32, u32, u32), bool, String)>, spec, important| match best {
+            Some((current, was_important, _)) => (important, spec) >= (*was_important, *current),
+            None => true,
+        };
         for rule in &self.rules {
-            let Some(value) = rule.declarations.get(property) else { continue };
+            let Some(decl) = rule.declarations.get(&property) else { continue };
             let mut spec: Option<(u32, u32, u32)> = None;
             for selector in &rule.selectors {
                 if selector.matches(t) {
@@ -396,20 +412,29 @@ impl Sheet {
                 }
             }
             let Some(spec) = spec else { continue };
-            // Higher specificity wins; a tie goes to the later rule.
-            if best.map(|(current, _)| spec >= current).unwrap_or(true) {
-                best = Some((spec, value.as_str()));
+            if wins(&best, spec, decl.important) {
+                best = Some((spec, decl.important, decl.value.clone()));
             }
         }
-        best.map(|(_, value)| value.to_string())
+        if let Some(text) = inline {
+            let inline_spec = (u32::MAX, u32::MAX, u32::MAX);
+            if let Some(decl) = parse_declarations(text).get(&property) {
+                if wins(&best, inline_spec, decl.important) {
+                    best = Some((inline_spec, decl.important, decl.value.clone()));
+                }
+            }
+        }
+        best.map(|(_, _, value)| value)
     }
 
-    /// `display: none`, or `visibility: hidden` / `collapse`.
+    /// `display: none`, or `visibility: hidden` / `collapse`. Property values
+    /// are keywords, so their case does not matter.
     pub fn hidden(&self, t: &Target<'_>, inline: Option<&str>) -> bool {
-        if self.value(t, "display", inline).as_deref() == Some("none") {
+        let keyword = |property: &str| self.value(t, property, inline).map(|v| v.trim().to_ascii_lowercase());
+        if keyword("display").as_deref() == Some("none") {
             return true;
         }
-        matches!(self.value(t, "visibility", inline).as_deref(), Some("hidden") | Some("collapse"))
+        matches!(keyword("visibility").as_deref(), Some("hidden") | Some("collapse"))
     }
 
     /// True when the element asks for a monospaced font.
@@ -660,5 +685,29 @@ mod tests {
         assert!(!sheet("h1 { color: red } .x { a: b }").needs_ancestors());
         assert!(sheet("div p { color: red }").needs_ancestors());
         assert!(sheet("a > b { color: red }").needs_ancestors());
+    }
+
+    #[test]
+    fn important_beats_specificity_and_inline() {
+        let s = sheet("#main .note { display: block } .note { display: none !important }");
+        let leaf = id("p", None, &["note"]);
+        let target = Target { el: &leaf, ancestors: &[id("div", Some("main"), &[])] };
+        assert_eq!(s.value(&target, "display", None).as_deref(), Some("none"));
+        // An important sheet rule outranks even an inline declaration.
+        assert!(s.hidden(&target, Some("display: inline")));
+        // Without !important the inline style wins, as usual.
+        let plain = sheet(".note { display: none }");
+        assert!(!plain.hidden(&target, Some("display: inline")));
+    }
+
+    #[test]
+    fn keyword_values_ignore_case_and_spacing() {
+        let gone = id("p", None, &["gone"]);
+        assert!(sheet(".gone { DISPLAY:NONE }").hidden(&Target::alone(&gone), None));
+        assert!(sheet(".gone { visibility: HIDDEN }").hidden(&Target::alone(&gone), None));
+        let none = Sheet::default();
+        assert!(none.hidden(&Target::alone(&gone), Some("Display: None !IMPORTANT")));
+        // A value that merely starts with the keyword is not the keyword.
+        assert!(!none.hidden(&Target::alone(&gone), Some("display: nonesuch")));
     }
 }

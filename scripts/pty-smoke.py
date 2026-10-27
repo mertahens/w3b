@@ -30,6 +30,7 @@ PAGE = b"""<!doctype html>
 <h1>Pty heading</h1>
 <p>some paragraph text that should show up on screen.</p>
 <p class="secret">SECRET-NEVER-SHOWN</p>
+<p class="secret" style="display: BLOCK !important">IMPORTANT-SHOWN</p>
 <table><tr><th>Tool</th><th>Stars</th></tr><tr><td>w3b</td><td>12</td></tr></table>
 <p>with <code>code-text</code> and <span class="term">term-text</span> inline.</p>
 <p><img src="/img/logo.png" alt="logo"></p>
@@ -208,8 +209,17 @@ def main() -> int:
     for needle in (b"Tool", b"Stars", b"code-text", b"term-text"):
         if needle not in plain:
             problems.append(f"page content {needle!r} never reached the screen")
+    # Hovering must highlight the whole link, not the word under the cursor.
+    # Cells that share a style are written as one run, so one run of the link's
+    # own text in the hover colour (bg 7) proves it.  The cursor sits on the
+    # link's first letter, so the run starts at its second.
+    if not re.search(rb"48;5;7m[ -~]*second page", raw):
+        problems.append("the hover highlight did not cover the whole link text")
     if b"SECRET-NEVER-SHOWN" in plain:
         problems.append("a display: none element was rendered")
+    # An inline `display: block !important` outranks the sheet's display: none.
+    if b"IMPORTANT-SHOWN" not in plain:
+        problems.append("an !important inline display was overridden")
     # A table must come out as a box-drawing grid. The grid characters are
     # multi-byte, and a diff write can split one, so drop replacement
     # characters before looking.

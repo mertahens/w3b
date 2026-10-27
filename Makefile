@@ -1,13 +1,16 @@
 CARGO ?= cargo
 
 .DEFAULT_GOAL := build
-.PHONY: build release test unit integration fmt fmt-check clippy lint check dump snapshot update pty-smoke clean
+.PHONY: build release run test unit integration fmt fmt-check clippy lint check dump snapshot update pty-smoke clean
 
 build:            ## debug build
 	$(CARGO) build
 
 release:          ## optimised build
 	$(CARGO) build --release
+
+run:              ## build and browse (make run URL=https://example.com)
+	$(CARGO) run --quiet --release -- $(URL)
 
 test:             ## every test, no network required
 	$(CARGO) test --all-targets

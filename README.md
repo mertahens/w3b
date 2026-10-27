@@ -190,8 +190,12 @@ w3b has no box model, so most CSS cannot be applied. Two decisions it does take
 come from the stylesheet, and they are taken while parsing:
 
 * **Is this element on the page?** `display: none` and `visibility: hidden`
-  remove the element and everything inside it, as does the `hidden` attribute. A
-  hidden link is not a link: it cannot be tabbed to or followed.
+  remove the element and everything inside it, as does the `hidden` attribute —
+  a child cannot rescue itself with `display: block`. A hidden link is not a
+  link: it cannot be tabbed to or followed. Declarations cascade the way CSS
+  does (specificity, later wins, inline above the sheet, `!important` above all
+  of it), and property names and keyword values ignore case, so
+  `style="DISPLAY: NONE"` hides just as well.`
 * **Is this text monospace?** `font-family: monospace` (or a family named after
   one: Courier, Menlo, JetBrains Mono, ...) marks the element; so do the tags the
   browser already draws monospaced (`code`, `pre`, `kbd`, `samp`, `tt`,
