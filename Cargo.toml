@@ -17,10 +17,12 @@ regex = "1"
 scraper = "0.29"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+url = "2"
 toml = "0.9"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 ureq = { version = "3.5", features = ["gzip", "brotli"] }
+ego-tree = "0.11"
 
 [dev-dependencies]
 insta = "1"
