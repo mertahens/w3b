@@ -503,15 +503,21 @@ impl App {
     }
 
     pub fn right(&mut self) {
-        let width = self.row_width(self.view.cursor.row);
-        if self.view.cursor.col < width {
+        let max = self.max_col();
+        if self.view.cursor.col < max {
             self.view.cursor.col += 1;
             self.view.cursor.desired = self.view.cursor.col;
         }
-        if self.config.behavior.wrap {
-            self.view.cursor.col = self.view.cursor.col.min(width);
-        }
         self.ensure_visible();
+    }
+
+    /// The farthest column the cursor can reach. It is the width of the page, not
+    /// the length of the line the cursor stands on: the cursor is free to sit in
+    /// the blank space to the right of a short line and to keep that column when
+    /// moving up or down. With wrapping off a row can be wider than the screen,
+    /// and then the whole row is walkable.
+    fn max_col(&self) -> usize {
+        self.content_width().max(self.row_width(self.view.cursor.row))
     }
 
     pub fn line_start(&mut self) {
@@ -546,8 +552,10 @@ impl App {
 
     fn set_row(&mut self, row: usize) {
         self.view.cursor.row = row;
-        let width = self.row_width(row);
-        self.view.cursor.col = self.view.cursor.desired.min(width);
+        // The wanted column survives a move onto a shorter line: the cursor keeps
+        // its place on the x axis instead of being pulled back to the text.
+        let max = self.max_col();
+        self.view.cursor.col = self.view.cursor.desired.min(max);
         self.ensure_visible();
     }
 
@@ -585,7 +593,8 @@ impl App {
             } else if self.view.cursor.col >= self.view.hscroll + visible {
                 self.view.hscroll = self.view.cursor.col + 1 - visible;
             }
-            self.view.hscroll = self.view.hscroll.min(width);
+            let limit = width.max(self.view.cursor.col + 1);
+            self.view.hscroll = self.view.hscroll.min(limit);
         }
     }
 }

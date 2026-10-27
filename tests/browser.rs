@@ -616,3 +616,28 @@ fn ctrl_c_quits_from_a_field_but_q_only_types() {
     app.handle_key(ctrl(KeyCode::Char('c')));
     assert!(app.quit, "Ctrl-c works in every mode");
 }
+
+#[test]
+fn the_cursor_keeps_its_column_past_the_end_of_a_short_line() {
+    let html = "<p>short</p><p>a much longer line of text that goes on for a while</p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 24);
+    let short = app.row_width(0);
+    assert!(short < 10, "the first row should be short: {short}");
+
+    for _ in 0..(short + 10) {
+        app.handle_key(key(KeyCode::Char('l')));
+    }
+    assert!(app.view.cursor.col > short, "the cursor walked into the blank right of the text");
+    assert!(app.view.cursor.col <= app.content_width(), "and stayed on the page");
+
+    let col = app.view.cursor.col;
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.view.cursor.col, col, "moving down kept the wanted column");
+    app.handle_key(key(KeyCode::Char('k')));
+    assert_eq!(app.view.cursor.col, col, "and moving back up did too");
+
+    for _ in 0..80 {
+        app.handle_key(key(KeyCode::Char('l')));
+    }
+    assert_eq!(app.view.cursor.col, app.content_width(), "the far edge of the page is the limit");
+}
