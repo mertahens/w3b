@@ -322,12 +322,6 @@ fn mouse_click_follows_a_link() {
     use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
     let mut app = fake_app(home_fetcher(), HOME, 70, 24);
     let p = *app.page.layout.links.first().unwrap();
-    let ev =
-        MouseEvent { kind: MouseEventKind::ScrollDown, column: 0, row: 0, modifiers: KeyModifiers::NONE };
-    app.handle_mouse(ev);
-    assert_eq!(app.view.cursor.row, 3, "scroll wheel moves three lines");
-
-    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
     // The screen keeps `page_padding_x` blank columns on the left, so a layout
     // column is that many columns further right on screen.
     let ev = MouseEvent {
@@ -339,6 +333,24 @@ fn mouse_click_follows_a_link() {
     app.handle_mouse(ev);
     app.settle();
     assert_eq!(app.url(), "https://test.local/second");
+}
+
+#[test]
+fn one_wheel_notch_moves_one_line() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let wheel = |kind| MouseEvent { kind, column: 4, row: 4, modifiers: KeyModifiers::NONE };
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    assert_eq!(app.view.cursor.row, 1, "one notch, one line");
+    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    assert_eq!(app.view.cursor.row, 2);
+    app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+    assert_eq!(app.view.cursor.row, 1, "and back up one line");
+    // A click still jumps to the row that was clicked, wheel included.
+    app.handle_mouse(wheel(MouseEventKind::Down(MouseButton::Left)));
+    assert_eq!(app.view.cursor.row, 4, "a click moves where it was clicked");
+    app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+    assert_eq!(app.view.cursor.row, 3);
 }
 
 #[test]

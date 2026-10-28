@@ -194,8 +194,9 @@ impl App {
 
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Action {
         match ev.kind {
-            MouseEventKind::ScrollDown => self.down(3),
-            MouseEventKind::ScrollUp => self.up(3),
+            // One notch moves one line: the wheel is for reading, not for jumping.
+            MouseEventKind::ScrollDown => self.down(1),
+            MouseEventKind::ScrollUp => self.up(1),
             MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) => {
                 let row = self.view.scroll + ev.row as usize;
                 let col = self.view.hscroll + (ev.column as usize).saturating_sub(self.padding_x());

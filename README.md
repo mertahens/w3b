@@ -117,7 +117,8 @@ what you typed, and a value is remembered for as long as you stay on the page -
 navigating away starts over. Nothing is submitted (see
 [Not implemented](#not-implemented-on-purpose-for-now)).
 
-Mouse wheel and left-click work too; disable with `mouse = false`. The link the
+The mouse wheel moves the cursor one line per notch and left-click follows the link
+under it; disable either with `mouse = false`. The link the
 cursor stands on is highlighted with `[style.hovered_link]` — the link colour
 moves from the ink to the background, with black text — and its target is shown
 in the status line as `-> url`. The cursor is not tied to the length of its line:
