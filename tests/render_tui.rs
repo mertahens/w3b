@@ -259,7 +259,7 @@ fn search_matches_are_highlighted() {
 }
 
 #[test]
-fn monospace_shades_its_text_and_stops_with_it() {
+fn monospace_slabs_its_text_with_one_space_of_padding() {
     let html = "<p>plain <code>ls -l</code></p>";
     let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
     app.view.cursor.row = 3;
@@ -275,15 +275,26 @@ fn monospace_shades_its_text_and_stops_with_it() {
     assert_eq!(code.bg, slab, "the mono run is shaded");
     assert_eq!(code.fg, ink, "and its text is bright, not the <code> colour");
     assert_eq!(buf.cell((pad, 0)).expect("cell").style().bg, Some(Color::Reset), "plain words are not");
-    // The slab stops where the text does: no dark bar across the empty part of
-    // the line, however wide the terminal is.
-    assert_eq!(buf.cell((pad + 10, 0)).expect("cell").style().bg, slab, "the last glyph is still shaded");
+    // The slab carries one blank cell of padding on each side and stops there: no
+    // dark bar across the empty part of the line, however wide the terminal is.
     assert_eq!(
-        buf.cell((pad + 11, 0)).expect("cell").style().bg,
-        Some(Color::Reset),
-        "the blank after it is not"
+        buf.cell((pad + 5, 0)).expect("cell").style().bg,
+        slab,
+        "the space before the code is on the slab"
     );
-    assert_eq!(buf.cell((39, 0)).expect("cell").style().bg, Some(Color::Reset), "nor the end of the line");
+    assert_eq!(
+        buf.cell((pad + 4, 0)).expect("cell").style().bg,
+        Some(Color::Reset),
+        "one cell of padding, not two"
+    );
+    assert_eq!(buf.cell((pad + 10, 0)).expect("cell").style().bg, slab, "the last glyph is still shaded");
+    assert_eq!(buf.cell((pad + 11, 0)).expect("cell").style().bg, slab, "plus one cell after it");
+    assert_eq!(buf.cell((pad + 12, 0)).expect("cell").style().bg, Some(Color::Reset), "then nothing at all");
+    assert_eq!(
+        buf.cell((39, 0)).expect("cell").style().bg,
+        Some(Color::Reset),
+        "clear to the edge of the line"
+    );
     assert_eq!(
         buf.cell((pad, 1)).expect("cell").style().bg,
         Some(Color::Reset),

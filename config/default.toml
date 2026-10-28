@@ -45,8 +45,8 @@ fg = "yellow"
 italic = true
 
 # Elements that ask for a monospace font (code, pre, kbd, a monospace
-# font-family). The colours cover the text itself, not the whole line: a dark
-# slab with light text, so code stands out from the prose around it.
+# font-family). The colours cover the text plus one blank cell of padding on each
+# side - a dark slab with light text, so code stands out from the prose around it.
 [style.monospace]
 fg = "#d0d0d0"
 bg = "#141414"

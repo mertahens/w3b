@@ -234,10 +234,10 @@ come from the stylesheet, and they are taken while parsing:
 * **Is this text monospace?** `font-family: monospace` (or a family named after
   one: Courier, Menlo, JetBrains Mono, ...) marks the element; so do the tags the
   browser already draws monospaced (`code`, `pre`, `kbd`, `samp`, `tt`,
-  `textarea`). `[style.monospace]` paints a dark slab under that text and stops with
-  it: the blank to the right of a short line, the rows around a block and the rest of
-  the terminal are left alone, so no empty line below a block is shaded. The slab also
-  outranks the colour set for `code`.
+  `textarea`). `[style.monospace]` paints a dark slab under that text with one blank
+  cell of padding on each side, and stops there: the rest of a short line, the rows
+  around a block and the rest of the terminal are left alone, so no empty line below a
+  block is shaded. The slab also outranks the colour set for `code`.
 
 Everything else in CSS — colours, sizes, positioning, `float`, `grid` — is
 ignored on purpose.

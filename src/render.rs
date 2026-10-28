@@ -163,6 +163,45 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
                 col += gw;
             }
         }
+
+        // The slab carries one blank cell on each side of the monospace text, so
+        // code never sits flush against its own background. The bounds are taken
+        // from the glyphs themselves: a run of spaces marked monospace (the
+        // separator before a <code>, say) does not widen the slab.
+        let mut first = usize::MAX;
+        let mut last = 0usize;
+        for run in row.runs.iter().filter(|r| r.style.mono) {
+            let mut col = run.start;
+            for g in run.text.graphemes(true) {
+                let gw = g.width().max(1);
+                if !g.trim().is_empty() {
+                    first = first.min(col);
+                    last = last.max(col + gw - 1);
+                }
+                col += gw;
+            }
+        }
+        if first != usize::MAX {
+            for col in first.saturating_sub(1)..=last + 1 {
+                let x = pad as isize + col as isize - hscroll as isize;
+                if x >= 0 && (x as usize) < usize::from(area.width) {
+                    let cell = &mut buf[(area.x + x as u16, y)];
+                    // Text cells keep the style they were drawn with, so a link, a
+                    // search hit or the cursor on a code line stays visible.
+                    if cell.symbol().trim().is_empty()
+                        || row.runs.iter().any(|r| {
+                            r.style.mono && {
+                                let end =
+                                    r.start + r.text.graphemes(true).map(|g| g.width().max(1)).sum::<usize>();
+                                col >= r.start && col < end
+                            }
+                        })
+                    {
+                        cell.set_style(cell.style().patch(app.theme.monospace));
+                    }
+                }
+            }
+        }
     }
 
     // The cursor is drawn last and unconditionally: it must be visible on a
