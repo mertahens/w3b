@@ -2,7 +2,7 @@
 source: tests/dump_snapshots.rs
 expression: "show(html, 40)"
 ---
-  • one
-    • one.a
-    • one.b
+• one
+  • one.a
+  • one.b
 • two

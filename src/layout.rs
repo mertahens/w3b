@@ -127,7 +127,11 @@ pub fn layout(doc: &Doc, width: usize, tab_width: usize, wrap: bool) -> Layout {
         // list items, where the marker already separates the lines.
         let same_group = matches!(
             (previous, block.kind),
-            (Some(BlockKind::Pre), BlockKind::Pre) | (Some(BlockKind::Item { .. }), BlockKind::Item { .. })
+            (Some(BlockKind::Pre), BlockKind::Pre)
+                | (
+                    Some(BlockKind::Item { .. } | BlockKind::ItemCont { .. }),
+                    BlockKind::Item { .. } | BlockKind::ItemCont { .. }
+                )
         );
         let separate = !same_group;
         if separate && !out.rows.is_empty() && out.rows.last().map(Row::is_blank) == Some(false) {
@@ -140,12 +144,17 @@ pub fn layout(doc: &Doc, width: usize, tab_width: usize, wrap: bool) -> Layout {
             BlockKind::Divider => out.rows.push(divider_row(width)),
             BlockKind::Table { index } => layout_table(&mut out, doc, index, indent, opts),
             BlockKind::Pre => layout_pre(&mut out, block, indent, opts),
-            BlockKind::Item { depth, ordered, index } => {
+            BlockKind::Item { depth, ordered, index, heading } => {
                 let marker = if ordered { format!("{}.", index + 1) } else { "\u{2022}".to_string() };
                 let pad = " ".repeat(indent + (depth as usize - 1) * 2);
                 let prefix = pad.clone() + &marker + " ";
                 let cont = pad + &" ".repeat(marker.width() + 1);
-                layout_flow_inner(&mut out, block, prefix, cont, opts);
+                layout_flow_inner(&mut out, block, prefix, cont, opts, heading > 0);
+            }
+            BlockKind::ItemCont { depth, marker } => {
+                // Continuation of an open item: no marker, indent up to its text.
+                let pad = " ".repeat(indent + (depth as usize - 1) * 2 + marker as usize + 1);
+                layout_flow_inner(&mut out, block, pad.clone(), pad, opts, false);
             }
             BlockKind::Heading(_) => layout_flow(&mut out, block, " ".repeat(indent), opts),
             _ => layout_flow(&mut out, block, " ".repeat(indent), opts),
@@ -201,10 +210,17 @@ fn layout_pre(out: &mut Layout, block: &Block, indent: usize, opts: Options) {
 
 fn layout_flow(out: &mut Layout, block: &Block, prefix: String, opts: Options) {
     let cont = prefix.clone();
-    layout_flow_inner(out, block, prefix, cont, opts)
+    layout_flow_inner(out, block, prefix, cont, opts, matches!(block.kind, BlockKind::Heading(_)))
 }
 
-fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: String, opts: Options) {
+fn layout_flow_inner(
+    out: &mut Layout,
+    block: &Block,
+    prefix: String,
+    cont: String,
+    opts: Options,
+    heading: bool,
+) {
     let cont_run = Run { text: cont.clone(), start: 0, style: CellStyle::default(), link: None, field: None };
     let indent_run =
         Run { text: prefix.clone(), start: 0, style: CellStyle::default(), link: None, field: None };
@@ -228,7 +244,7 @@ fn layout_flow_inner(out: &mut Layout, block: &Block, prefix: String, cont: Stri
             continue;
         }
         after_break = false;
-        let style = style_of(piece, matches!(block.kind, BlockKind::Heading(_)));
+        let style = style_of(piece, heading);
         let text = expand_tabs(&piece.text, opts.tab_width);
         for token in tokens_for(text, piece.field.is_some()) {
             let token_width = token.text.width();
@@ -724,6 +740,10 @@ mod tests {
     use super::*;
     use crate::dom;
 
+    fn rows(layout: &Layout) -> Vec<String> {
+        (0..layout.rows.len()).map(|n| row_text(layout, n)).collect()
+    }
+
     fn row_text(layout: &Layout, row: usize) -> String {
         layout.rows[row].runs.iter().map(|r| r.text.as_str()).collect::<String>().trim_end().to_string()
     }
@@ -772,5 +792,43 @@ mod tests {
         let laid = layout(&doc, 40, 4, true);
         let rows: Vec<String> = (0..laid.rows.len()).map(|r| row_text(&laid, r)).collect();
         assert_eq!(rows, vec!["a", "", "d"], "{rows:?}");
+    }
+
+    #[test]
+    fn every_block_inside_an_item_is_indented() {
+        let laid = layout(
+            &crate::dom::parse("<ul><li><p>alpha</p><div>beta</div></li><li>gamma</li></ul>"),
+            40,
+            4,
+            true,
+        );
+        assert_eq!(rows(&laid), ["\u{2022} alpha", "  beta", "\u{2022} gamma"]);
+    }
+
+    #[test]
+    fn nested_items_line_up_under_their_own_marker() {
+        let laid =
+            layout(&crate::dom::parse("<ul><li>outer<ul><li>inner</li></ul>tail</li></ul>"), 40, 4, true);
+        assert_eq!(rows(&laid), ["\u{2022} outer", "  \u{2022} inner", "  tail"]);
+    }
+
+    #[test]
+    fn an_ordered_item_indents_past_its_number() {
+        let laid = layout(&crate::dom::parse("<ol><li><p>one</p><p>two</p></li></ol>"), 40, 4, true);
+        assert_eq!(rows(&laid), ["1. one", "   two"]);
+    }
+
+    #[test]
+    fn an_item_opened_by_a_heading_keeps_bullet_and_heading_style() {
+        let laid = layout(&crate::dom::parse("<ul><li><h2>Head</h2><p>body</p></li></ul>"), 40, 4, true);
+        assert_eq!(rows(&laid), ["\u{2022} Head", "  body"]);
+        let head = laid.rows[0].runs.iter().find(|r| r.text.contains("Head")).unwrap();
+        assert!(head.style.heading, "the heading style survives its bullet");
+    }
+
+    #[test]
+    fn a_pre_inside_an_item_is_indented_and_takes_the_marker() {
+        let laid = layout(&crate::dom::parse("<ul><li><pre>first\nsecond</pre></li></ul>"), 40, 4, true);
+        assert_eq!(rows(&laid), ["\u{2022} first", "  second"]);
     }
 }

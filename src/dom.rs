@@ -48,6 +48,16 @@ pub enum BlockKind {
         depth: u16,
         ordered: bool,
         index: u32,
+        /// A heading that opens an item keeps its bullet: the level rides along
+        /// here instead of replacing the kind. 0 means the content is not a heading.
+        heading: u8,
+    },
+    /// A block that continues a list item opened earlier: it carries no marker of
+    /// its own but hangs under the item's text, so everything inside an `<li>` is
+    /// indented to the same column.
+    ItemCont {
+        depth: u16,
+        marker: u16,
     },
     Pre,
     Divider,
@@ -219,6 +229,9 @@ struct ListCtx {
     depth: u16,
     ordered: bool,
     index: u32,
+    /// Width of the marker of the item currently open, 0 when no item is open.
+    /// Later blocks in that item are indented by this much.
+    marker: u16,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -322,8 +335,14 @@ impl Builder {
 
         match name {
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                let level = name[1..2].parse().unwrap_or(1);
                 self.flush();
-                self.pending_block = Some(BlockKind::Heading(name[1..2].parse().unwrap_or(1)));
+                match &mut self.pending_block {
+                    // A heading that opens a list item keeps the marker: the level
+                    // rides on the item rather than replacing it.
+                    Some(BlockKind::Item { heading, .. }) => *heading = level,
+                    _ => self.pending_block = Some(BlockKind::Heading(level)),
+                }
             }
             "hr" => {
                 self.flush();
@@ -339,18 +358,24 @@ impl Builder {
                 depth: self.lists.len() as u16 + 1,
                 ordered: name == "ol",
                 index: 0,
+                marker: 0,
             }),
             "li" => {
                 self.flush();
                 let kind = match self.lists.last_mut() {
                     Some(list) => {
-                        let kind =
-                            BlockKind::Item { depth: list.depth, ordered: list.ordered, index: list.index };
+                        let kind = BlockKind::Item {
+                            depth: list.depth,
+                            ordered: list.ordered,
+                            index: list.index,
+                            heading: 0,
+                        };
+                        list.marker = marker_width(list.ordered, list.index);
                         list.index += 1;
                         kind
                     }
                     // Stray <li> without a list parent: still render as a bullet.
-                    None => BlockKind::Item { depth: 1, ordered: false, index: 0 },
+                    None => BlockKind::Item { depth: 1, ordered: false, index: 0, heading: 0 },
                 };
                 self.pending_block = Some(kind);
             }
@@ -479,6 +504,30 @@ impl Builder {
             "ul" | "ol" => {
                 self.lists.pop();
             }
+            "li" => {
+                self.flush();
+                if let Some(kind @ BlockKind::Item { depth, .. }) = self.pending_block.take() {
+                    // The content may have gone into blocks of its own - a <pre>, a
+                    // nested block - while the marker waited. Put the marker on the
+                    // first of those blocks instead of on a line of its own.
+                    let mut first = None;
+                    for (n, b) in self.doc.blocks.iter().enumerate().rev() {
+                        if matches!(b.kind, BlockKind::ItemCont { depth: d, .. } if d == depth) {
+                            first = Some(n);
+                        } else {
+                            break;
+                        }
+                    }
+                    match first {
+                        Some(n) => self.doc.blocks[n].kind = kind,
+                        // An item with nothing in it still shows its marker.
+                        None => self.flush_as(kind),
+                    }
+                }
+                if let Some(list) = self.lists.last_mut() {
+                    list.marker = 0;
+                }
+            }
             _ => {}
         }
 
@@ -595,6 +644,12 @@ impl Builder {
 
     fn flush(&mut self) {
         if let Some(kind) = self.pending_block.take() {
+            if matches!(kind, BlockKind::Item { .. }) && self.cur.is_empty() {
+                // The marker of an item whose content arrives in nested blocks waits
+                // for that content instead of standing on a line of its own.
+                self.pending_block = Some(kind);
+                return;
+            }
             self.flush_as(kind);
             return;
         }
@@ -610,9 +665,9 @@ impl Builder {
         }
         if self.cur.is_empty() {
             match kind {
-                BlockKind::Item { depth, ordered, index } => {
+                BlockKind::Item { depth, ordered, index, heading } => {
                     self.push_block(Block {
-                        kind: BlockKind::Item { depth, ordered, index },
+                        kind: BlockKind::Item { depth, ordered, index, heading },
                         indent: self.indent,
                         pieces: vec![],
                     });
@@ -623,7 +678,22 @@ impl Builder {
             }
             return;
         }
-        let indent = self.indent + self.lists.last().map_or(0, |l| l.depth.saturating_sub(1));
+        // A block inside an item that is still open continues that item: it gets no
+        // marker and is lined up under the item's text.
+        let kind = match kind {
+            k @ (BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::Pre) => match self.lists.last() {
+                Some(list) if list.marker > 0 => {
+                    BlockKind::ItemCont { depth: list.depth, marker: list.marker }
+                }
+                _ => k,
+            },
+            other => other,
+        };
+        let indent = match kind {
+            // An item knows its own depth; adding the list term would count it twice.
+            BlockKind::Item { .. } | BlockKind::ItemCont { .. } => self.indent,
+            _ => self.indent + self.lists.last().map_or(0, |l| l.depth.saturating_sub(1)),
+        };
         let block = Block { kind, indent, pieces: std::mem::take(&mut self.cur) };
         self.push_block(block);
     }
@@ -676,6 +746,15 @@ fn collapse(text: &str) -> String {
 /// otherwise aria-label, otherwise the file name from src. Empty means the image
 /// has nothing to say - an explicit `alt=""`, or a base64 `data:` source with no
 /// name to show - and such an image is left out of the page.
+/// The marker a list item draws: `one.` for ordered, a bullet for unordered.
+fn marker_width(ordered: bool, index: u32) -> u16 {
+    if ordered {
+        format!("{index}.").chars().count() as u16
+    } else {
+        1
+    }
+}
+
 fn image_label(el: &scraper::node::Element) -> String {
     for name in ["alt", "title", "aria-label"] {
         let value = el.attr(name).unwrap_or("").trim();
@@ -887,7 +966,7 @@ mod tests {
             .blocks
             .iter()
             .filter_map(|b| match b.kind {
-                BlockKind::Item { depth, ordered, index } => {
+                BlockKind::Item { depth, ordered, index, .. } => {
                     Some((depth, ordered, index, b.pieces.iter().map(|p| p.text.as_str()).collect()))
                 }
                 _ => None,
@@ -911,7 +990,7 @@ mod tests {
     #[test]
     fn stray_li_without_a_list_is_still_a_bullet() {
         let doc = parse("<li>odd</li>");
-        assert!(matches!(doc.blocks[0].kind, BlockKind::Item { depth: 1, ordered: false, index: 0 }));
+        assert!(matches!(doc.blocks[0].kind, BlockKind::Item { depth: 1, ordered: false, index: 0, .. }));
     }
 
     #[test]
@@ -1114,5 +1193,22 @@ mod tests {
         assert_eq!(hrefs, vec!["/real"], "only the real target is a link");
         let all: String = doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
         assert!(all.contains("blob") && all.contains("click"), "the text is still read: {all}");
+    }
+
+    #[test]
+    fn an_item_stays_one_item_however_its_content_is_written() {
+        let doc = parse("<ul><li><p>alpha</p><div>beta</div></li></ul>");
+        let kinds: Vec<BlockKind> = doc.blocks.iter().map(|b| b.kind).collect();
+        assert!(
+            matches!(kinds[0], BlockKind::Item { depth: 1, ordered: false, index: 0, heading: 0 }),
+            "{kinds:?}"
+        );
+        assert!(matches!(kinds[1], BlockKind::ItemCont { depth: 1, marker: 1 }), "{kinds:?}");
+        let doc = parse("<ul><li><h2>head</h2></li></ul>");
+        assert!(
+            matches!(doc.blocks[0].kind, BlockKind::Item { depth: 1, heading: 2, .. }),
+            "{:?}",
+            doc.blocks[0].kind
+        );
     }
 }
