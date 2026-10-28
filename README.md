@@ -40,7 +40,9 @@ mail link and a anchor.
   `div` keeps it in the sentence, `display: block` on a `span` gives it a line of its
   own, `inline-block` counts as inline, and an unknown value leaves the tag's default.
   Tables, lists, `<pre>`, `<hr>` and `<br>` keep the layout their tag implies.
-  Buttons and labels are inline, as they are in HTML.
+  Only block-level tags break a line by default, so `a`, `span`, `img`, `code`,
+  `input`, `button`, `label` and a `select` with its `option`s flow with the text,
+  and so does any tag w3b does not know.
 * **Two elements that meet with no whitespace between them** still read as separate
   words: `<b>bold</b>word` is `bold word`, two images get a space, and a cell holding
   two paragraphs does not glue their last and first word together. No space is added

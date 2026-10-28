@@ -162,6 +162,10 @@ const SKIP: &[&str] = &[
 ];
 
 /// Elements that end the current block of text.
+/// The tags whose default `display` is block-level. Anything not listed here is
+/// inline, exactly as in HTML: `a`, `span`, `img`, `code`, `input`, `button`,
+/// `label` and a `select` with its `option`s flow with the text and break no line.
+/// A `display` declaration in the page overrides this list.
 const BLOCK: &[&str] = &[
     "p",
     "div",
@@ -203,8 +207,6 @@ const BLOCK: &[&str] = &[
     "br",
     "caption",
     "colgroup",
-    "option",
-    "select",
 ];
 
 pub fn parse(html: &str) -> Doc {
@@ -1315,5 +1317,20 @@ mod tests {
         // Punctuation stays glued to the word it belongs to.
         assert_eq!(flow("<p>see <a href=/x>the docs</a>.</p>"), "see the docs.");
         assert_eq!(flow("<p>say <b>hello</b>, friend</p>"), "say hello, friend");
+    }
+
+    #[test]
+    fn inline_level_tags_break_no_line() {
+        // A <select> is inline-block in HTML, and w3b reads that as inline: it sits
+        // in the sentence and breaks nothing after it.
+        let doc = parse("<p>pick <select><option>one</option></select> now</p>");
+        assert_eq!(doc.blocks.len(), 1, "{:?}", doc.blocks.iter().map(|b| b.kind).collect::<Vec<_>>());
+        let text: String = doc.blocks[0].pieces.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(text.trim(), "pick [ input ] now");
+        // A tag w3b has never heard of is inline as well.
+        let doc = parse("<p>a<custom-widget>b</custom-widget>c</p>");
+        assert_eq!(doc.blocks.len(), 1);
+        let text: String = doc.blocks[0].pieces.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(text, "a b c");
     }
 }
