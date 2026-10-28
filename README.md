@@ -36,6 +36,15 @@ mail link and a anchor.
 * **Everything inside a list item belongs to it**: a `<li>` whose content is written
   as blocks (`<p>`, `<h2>`, `<pre>`) still has one marker, and its content is indented
   to line up under that item's text. Nested lists indent by depth.
+* **Where a line breaks is the `display` property's call**: `display: inline` on a
+  `div` keeps it in the sentence, `display: block` on a `span` gives it a line of its
+  own, `inline-block` counts as inline, and an unknown value leaves the tag's default.
+  Tables, lists, `<pre>`, `<hr>` and `<br>` keep the layout their tag implies.
+  Buttons and labels are inline, as they are in HTML.
+* **Two elements that meet with no whitespace between them** still read as separate
+  words: `<b>bold</b>word` is `bold word`, two images get a space, and a cell holding
+  two paragraphs does not glue their last and first word together. No space is added
+  in front of closing punctuation, so `done</a>.` stays `done.`.
 * **Images** are never fetched or drawn. They leave an `[img: …]` label holding
   whatever the image says about itself: `alt`, else `title`, else `aria-label`,
   else the file name from `src`. An image that says nothing is left off the page —

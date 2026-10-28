@@ -266,6 +266,9 @@ struct Builder {
     styles: css::Sheet,
     /// Open elements, outermost first, so a selector can walk the chain.
     path: Vec<css::Identity>,
+    /// Set when an element starts or ends. Two elements that meet here are written
+    /// without whitespace between them, and still read as separate words.
+    edge: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -313,6 +316,7 @@ impl Builder {
             return;
         }
         self.path.push(identity.clone());
+        self.edge = true;
         // Where lines break is the `display` property's job; the tag list above is
         // only the default for elements that declare none. Structural elements keep
         // their own layout, because w3b lays tables, lists and <pre> out by tag.
@@ -463,6 +467,7 @@ impl Builder {
 
         self.ctx.mono = saved_mono;
         self.path.pop();
+        self.edge = true;
 
         match name {
             "a" => self.ctx.link = None,
@@ -604,7 +609,16 @@ impl Builder {
     fn push_piece(&mut self, text: String, decorate: impl FnOnce(&mut Ctx)) {
         let mut ctx = self.ctx;
         decorate(&mut ctx);
-        if self.ws && !self.cur.is_empty() {
+        // An element meeting another element with no whitespace between them gets a
+        // separator anyway: `<img><img>`, `</a>word`, `<b>x</b>y`.
+        let gap = self.edge
+            && !self.ws
+            && match (self.cur.last(), text.chars().next()) {
+                (Some(prev), Some(first)) => element_gap(&prev.text, first),
+                _ => false,
+            };
+        self.edge = false;
+        if (self.ws || gap) && !self.cur.is_empty() {
             // A separator belongs to the link only when the link has already started,
             // so the space in "see <a>the docs</a>" is not part of the link.
             let inside = self.ctx.link.is_some() && self.cur.last().map(|p| p.link) == Some(self.ctx.link);
@@ -753,6 +767,17 @@ fn collapse(text: &str) -> String {
 /// otherwise aria-label, otherwise the file name from src. Empty means the image
 /// has nothing to say - an explicit `alt=""`, or a base64 `data:` source with no
 /// name to show - and such an image is left out of the page.
+/// Whether two elements that meet without whitespace need a separator between
+/// them. None goes in front of closing punctuation - `done</a>.` stays `done.` -
+/// and none after an opening one.
+fn element_gap(prev: &str, first: char) -> bool {
+    match (prev.chars().next_back(), Some(first)) {
+        (Some(prev), _) if "([{\u{ab}\"'\u{201c}".contains(prev) => false,
+        (_, Some(first)) if ".,;:!?)]}%\"'\u{201d}".contains(first) => false,
+        _ => true,
+    }
+}
+
 /// Tags whose layout comes from the tag itself whatever CSS declares: tables are
 /// laid out as grids, list items carry markers, `<pre>` keeps its shape.
 const STRUCTURE: &[&str] = &[
@@ -1061,7 +1086,7 @@ mod tests {
     fn img_alt_and_form_fields_become_placeholders() {
         let doc = parse("<img src=\"x.png\" alt=\"logo\"><input type=\"checkbox\"><button>Send</button>");
         let all: String = doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect();
-        assert_eq!(all, "[img: logo][ ] [ Send ]");
+        assert_eq!(all, "[img: logo] [ ] [ Send ]", "adjacent placeholders are separated");
         let doc = parse("<img src=\"/img/logo.png?v=2\"><img alt=\"\">");
         let all: Vec<String> =
             doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.clone())).collect();
@@ -1105,7 +1130,7 @@ mod tests {
         let doc = parse("<table><tr><td><p>one</p><p>two</p></td><td>x</td></tr></table>");
         let cell = &doc.tables[0].rows[0][0];
         let text: String = cell.pieces.iter().map(|p| p.text.as_str()).collect();
-        assert_eq!(text, "onetwo");
+        assert_eq!(text, "one two", "the paragraphs in a cell stay separate words");
         assert_eq!(doc.tables[0].rows[0].len(), 2);
         assert_eq!(doc.blocks.len(), 1, "the table is one block");
     }
@@ -1251,7 +1276,7 @@ mod tests {
         };
         let doc = styled("<div>one</div><div>two</div>", "div { display: inline }");
         assert_eq!(doc.blocks.len(), 1, "an inline <div> does not break the line: {:?}", kinds(&doc));
-        assert_eq!(flow(&doc), "onetwo");
+        assert_eq!(flow(&doc), "one two", "elements on one line are still separated");
         let doc = styled("<div>a<span>b</span>c</div>", "span { display: block }");
         assert_eq!(doc.blocks.len(), 3, "a block <span> breaks the line: {:?}", kinds(&doc));
         // An unknown value leaves the tag alone.
@@ -1277,5 +1302,18 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1, "a button sits in the sentence: {:?}", doc.blocks.len());
         let text: String = doc.blocks[0].pieces.iter().map(|p| p.text.as_str()).collect();
         assert!(text.contains("[ Send ]"), "{text}");
+    }
+
+    #[test]
+    fn elements_that_meet_without_whitespace_are_still_separated() {
+        let flow = |html: &str| -> String {
+            let doc = parse(html);
+            doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect()
+        };
+        assert_eq!(flow("<p><b>bold</b>word</p>"), "bold word");
+        assert_eq!(flow("<p><img src=a.png alt=one><img src=b.png alt=two></p>"), "[img: one] [img: two]");
+        // Punctuation stays glued to the word it belongs to.
+        assert_eq!(flow("<p>see <a href=/x>the docs</a>.</p>"), "see the docs.");
+        assert_eq!(flow("<p>say <b>hello</b>, friend</p>"), "say hello, friend");
     }
 }
