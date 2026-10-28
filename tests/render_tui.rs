@@ -259,7 +259,7 @@ fn search_matches_are_highlighted() {
 }
 
 #[test]
-fn monospace_slabs_the_text_and_the_rest_of_its_line() {
+fn monospace_shades_its_text_and_stops_with_it() {
     let html = "<p>plain <code>ls -l</code></p>";
     let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
     app.view.cursor.row = 3;
@@ -275,9 +275,15 @@ fn monospace_slabs_the_text_and_the_rest_of_its_line() {
     assert_eq!(code.bg, slab, "the mono run is shaded");
     assert_eq!(code.fg, ink, "and its text is bright, not the <code> colour");
     assert_eq!(buf.cell((pad, 0)).expect("cell").style().bg, Some(Color::Reset), "plain words are not");
-    // The slab runs on to the end of the line, so a code block reads as a block.
-    assert_eq!(buf.cell((pad + 11, 0)).expect("cell").style().bg, slab, "the rest of the line is filled");
-    assert_eq!(buf.cell((39, 0)).expect("cell").style().bg, slab, "up to the last column");
+    // The slab stops where the text does: no dark bar across the empty part of
+    // the line, however wide the terminal is.
+    assert_eq!(buf.cell((pad + 10, 0)).expect("cell").style().bg, slab, "the last glyph is still shaded");
+    assert_eq!(
+        buf.cell((pad + 11, 0)).expect("cell").style().bg,
+        Some(Color::Reset),
+        "the blank after it is not"
+    );
+    assert_eq!(buf.cell((39, 0)).expect("cell").style().bg, Some(Color::Reset), "nor the end of the line");
     assert_eq!(
         buf.cell((pad, 1)).expect("cell").style().bg,
         Some(Color::Reset),

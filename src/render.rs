@@ -124,10 +124,6 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
         let is_cursor_row = i == app.view.cursor.row;
 
         let line_style = app.theme.text;
-        // A monospace run carries its background to the end of the line, which is
-        // what makes a <pre> block read as a block of code.  Only the rows that
-        // hold monospace text get it, so no empty row below a block is shaded.
-        let mono_from = row.runs.iter().find(|r| r.style.mono).map(|r| r.start);
 
         // Clear the line first: stale pixels from a longer row must not remain.
         for x in 0..usize::from(area.width) {
@@ -137,12 +133,6 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
             cell.set_style(line_style);
             if is_cursor_row {
                 cell.set_style(cell.style().patch(app.theme.cursor_line));
-            }
-            let col = x as isize - pad as isize + hscroll as isize;
-            if let Some(from) = mono_from {
-                if col >= from as isize {
-                    cell.set_style(cell.style().patch(app.theme.monospace));
-                }
             }
         }
 
