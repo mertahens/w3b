@@ -227,9 +227,10 @@ pub fn render_status(app: &App, area: Rect, buf: &mut Buffer) {
     }
 
     let mut left = status_text(&status);
-    // A fetch in flight gets a braille spinner in front of the status word.
+    // A fetch in flight gets a braille spinner in front of the status word, with a
+    // blank cell between the glyph and the word so they never merge into one blob.
     if app.is_loading() {
-        left = format!(" {}{}", app.spinner_glyph(), left.trim_start());
+        left = format!(" {} {}", app.spinner_glyph(), left.trim_start());
     }
     let left_style = app.theme.status.for_status(status.kind(), status.code());
     let left_width = draw(buf, area, 0, &left, left_style);

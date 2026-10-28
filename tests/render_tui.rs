@@ -318,6 +318,10 @@ fn a_fetch_in_flight_spins_in_the_status_line() {
     let line = draw(&app, 50, 8).lines().last().expect("a status line").to_string();
     assert!(line.contains(spin), "the braille spinner shows: {line:?}");
     assert!(line.contains("LOADING"), "{line:?}");
+    assert!(
+        line.contains(&format!("{spin} LOADING")),
+        "a blank cell separates the spinner from the word: {line:?}"
+    );
     let done = fake_app(FakeFetcher::new().with_html(HOME, 200, "<h1>Done</h1>"), HOME, 50, 8);
     let quiet = draw(&done, 50, 8);
     let quiet = quiet.lines().last().expect("status").to_string();
