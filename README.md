@@ -33,6 +33,9 @@ mail link and a anchor.
   and adds an empty one, an inline element (`span`, `a`, `b`, `code`, …) never
   starts or ends a line by itself, and `<br>` breaks the line inside its block
   with no empty line. Two `<br>` in a row leave one blank line between them.
+* **Everything inside a list item belongs to it**: a `<li>` whose content is written
+  as blocks (`<p>`, `<h2>`, `<pre>`) still has one marker, and its content is indented
+  to line up under that item's text. Nested lists indent by depth.
 * **Images** are never fetched or drawn. They leave an `[img: …]` label holding
   whatever the image says about itself: `alt`, else `title`, else `aria-label`,
   else the file name from `src`. An image that says nothing is left off the page —
