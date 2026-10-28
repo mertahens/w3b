@@ -205,8 +205,6 @@ const BLOCK: &[&str] = &[
     "colgroup",
     "option",
     "select",
-    "button",
-    "label",
 ];
 
 pub fn parse(html: &str) -> Doc {
@@ -315,6 +313,15 @@ impl Builder {
             return;
         }
         self.path.push(identity.clone());
+        // Where lines break is the `display` property's job; the tag list above is
+        // only the default for elements that declare none. Structural elements keep
+        // their own layout, because w3b lays tables, lists and <pre> out by tag.
+        let display = self.styles.value(&self.target(&identity), "display", inline.as_deref());
+        let is_block = match display.as_deref().and_then(display_is_block) {
+            _ if TABLE_TAGS.contains(&name) || STRUCTURE.contains(&name) => true,
+            Some(on_line) => on_line,
+            None => BLOCK.contains(&name),
+        };
         let mono_now = self.mono_for(&identity, inline.as_deref());
         let saved_mono = self.ctx.mono;
         if mono_now {
@@ -429,7 +436,7 @@ impl Builder {
                 });
             }
             // Block elements end the current run of text.
-            _ if BLOCK.contains(&name) => self.flush(),
+            _ if is_block => self.flush(),
             _ => {}
         }
 
@@ -531,7 +538,7 @@ impl Builder {
             _ => {}
         }
 
-        if BLOCK.contains(&name) && name != "br" && !TABLE_TAGS.contains(&name) {
+        if is_block && name != "br" && !TABLE_TAGS.contains(&name) {
             self.flush();
         }
     }
@@ -746,6 +753,26 @@ fn collapse(text: &str) -> String {
 /// otherwise aria-label, otherwise the file name from src. Empty means the image
 /// has nothing to say - an explicit `alt=""`, or a base64 `data:` source with no
 /// name to show - and such an image is left out of the page.
+/// Tags whose layout comes from the tag itself whatever CSS declares: tables are
+/// laid out as grids, list items carry markers, `<pre>` keeps its shape.
+const STRUCTURE: &[&str] = &[
+    "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col", "ul", "ol", "li",
+    "pre", "hr", "br",
+];
+
+/// Whether a `display` value puts an element on a line of its own. `inline-block`
+/// counts as inline here: w3b has no box model, and the useful reading of it is
+/// "text that does not break the line". An unknown value leaves the tag's default.
+fn display_is_block(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "inline" | "inline-block" | "inline-flex" | "inline-grid" | "inline-table" | "contents"
+        | "run-in" => Some(false),
+        "block" | "flow-root" | "list-item" | "table" | "flex" | "grid" | "table-row" | "table-row-group"
+        | "table-header-group" | "table-footer-group" | "table-cell" | "table-caption" => Some(true),
+        _ => None,
+    }
+}
+
 /// The marker a list item draws: `one.` for ordered, a bullet for unordered.
 fn marker_width(ordered: bool, index: u32) -> u16 {
     if ordered {
@@ -1210,5 +1237,45 @@ mod tests {
             "{:?}",
             doc.blocks[0].kind
         );
+    }
+
+    fn styled(html: &str, sheet: &str) -> Doc {
+        parse_with_css(html, &css::parse(sheet))
+    }
+
+    #[test]
+    fn display_wins_over_the_tag_for_line_breaks() {
+        let kinds = |doc: &Doc| -> Vec<BlockKind> { doc.blocks.iter().map(|b| b.kind).collect() };
+        let flow = |doc: &Doc| -> String {
+            doc.blocks.iter().flat_map(|b| b.pieces.iter().map(|p| p.text.as_str())).collect()
+        };
+        let doc = styled("<div>one</div><div>two</div>", "div { display: inline }");
+        assert_eq!(doc.blocks.len(), 1, "an inline <div> does not break the line: {:?}", kinds(&doc));
+        assert_eq!(flow(&doc), "onetwo");
+        let doc = styled("<div>a<span>b</span>c</div>", "span { display: block }");
+        assert_eq!(doc.blocks.len(), 3, "a block <span> breaks the line: {:?}", kinds(&doc));
+        // An unknown value leaves the tag alone.
+        let doc = styled("<div>one</div><div>two</div>", "div { display: talble }");
+        assert_eq!(doc.blocks.len(), 2, "{:?}", kinds(&doc));
+    }
+
+    #[test]
+    fn inline_block_counts_as_inline_and_structure_does_not_move() {
+        let doc = styled("<span>a</span><span>b</span>", "span { display: inline-block }");
+        assert_eq!(doc.blocks.len(), 1, "{:?}", doc.blocks.iter().map(|b| b.kind).collect::<Vec<_>>());
+        let doc = styled("<ul><li>one</li></ul>", "ul, li { display: inline }");
+        assert!(
+            matches!(doc.blocks[0].kind, BlockKind::Item { .. }),
+            "a list item keeps its marker: {:?}",
+            doc.blocks[0].kind
+        );
+    }
+
+    #[test]
+    fn buttons_and_labels_are_inline() {
+        let doc = parse("<p>name <input name=q><button>Send</button> done</p>");
+        assert_eq!(doc.blocks.len(), 1, "a button sits in the sentence: {:?}", doc.blocks.len());
+        let text: String = doc.blocks[0].pieces.iter().map(|p| p.text.as_str()).collect();
+        assert!(text.contains("[ Send ]"), "{text}");
     }
 }
