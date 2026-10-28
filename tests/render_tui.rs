@@ -244,6 +244,51 @@ fn visited_links_use_the_visited_style() {
 }
 
 #[test]
+fn a_link_off_the_site_is_coloured_by_where_it_goes() {
+    let html = r#"<p><a href="/here">here</a> <a href="https://elsewhere.example/there">there</a></p>"#;
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
+    app.view.cursor.row = 3;
+    let buf = draw_buffer(&app, 40, 8);
+    let pad = app.padding_x() as u16;
+    assert_eq!(
+        buf.cell((pad, 0)).expect("cell").style().fg,
+        app.theme.link.fg,
+        "a link on this site is an ordinary link"
+    );
+
+    let off = buf.cell((pad + 5, 0)).expect("the off-site word");
+    assert_eq!(off.symbol(), "t", "'there' starts at layout column 5");
+    let style = off.style();
+    assert_eq!(style.fg, app.theme.external.fg, "a link to another host is coloured by where it goes");
+    assert_ne!(app.theme.external.fg, app.theme.link.fg, "and that colour is its own");
+    assert!(
+        style.add_modifier.contains(Modifier::UNDERLINED),
+        "it is still a link, so it is still underlined"
+    );
+}
+
+#[test]
+fn a_visited_external_link_does_not_start_looking_local() {
+    let html = r#"<p><a href="https://elsewhere.example/there">there</a></p>"#;
+    let fetcher = FakeFetcher::new().with_html(HOME, 200, html).with_html(
+        "https://elsewhere.example/there",
+        200,
+        "<p>read</p>",
+    );
+    let mut app = fake_app(fetcher, HOME, 40, 8);
+    app.open("https://elsewhere.example/there");
+    app.open(HOME);
+    app.view.cursor.row = 3;
+    let buf = draw_buffer(&app, 40, 8);
+    let pad = app.padding_x() as u16;
+    assert_eq!(
+        buf.cell((pad, 0)).expect("cell").style().fg,
+        app.theme.external.fg,
+        "having read it does not make it look like it belongs here"
+    );
+}
+
+#[test]
 fn search_matches_are_highlighted() {
     let mut app =
         fake_app(FakeFetcher::new().with_html(HOME, 200, "<p>find the needle here</p>"), HOME, 40, 8);
@@ -506,6 +551,17 @@ fn the_shipped_hover_paints_the_link_colour_behind_black_ink() {
 }
 
 #[test]
+fn the_shipped_config_makes_an_off_site_link_cyan() {
+    let app = fake_app(FakeFetcher::new().with_html(HOME, 200, "<p><a href=\"/x\">x</a></p>"), HOME, 60, 16);
+    assert_eq!(app.theme.external.fg, Some(Color::Cyan), "a link off this site is cyan");
+    assert_ne!(app.theme.external.fg, app.theme.link.fg, "and not the blue of a link that stays");
+    assert!(
+        app.theme.external.add_modifier.contains(Modifier::UNDERLINED),
+        "it is still a link, so it is still underlined"
+    );
+}
+
+#[test]
 fn an_image_inside_a_link_stays_black_and_underlined() {
     let html = "<p><a href=\"/x\"><img src=\"a.png\" alt=\"logo\"></a> <a href=\"/y\">word</a></p>";
     let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 8);
@@ -520,6 +576,58 @@ fn an_image_inside_a_link_stays_black_and_underlined() {
         assert!(style.add_modifier.contains(Modifier::UNDERLINED), "and takes the link underline");
     }
     assert_eq!(buf.cell((pad + 12, 0)).expect("cell").style().fg, Some(Color::Blue), "a word link is blue");
+}
+
+#[test]
+fn a_summary_line_is_underlined_text_and_not_a_link() {
+    let html = "<p>plain words</p><p><a href=\"/x\">a link</a></p><details><summary>Anything</summary>body</details>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 10);
+    app.view.cursor.row = 3;
+    let buf = draw_buffer(&app, 40, 10);
+    let pad = app.padding_x() as u16;
+    let plain = buf.cell((pad, 0)).expect("cell").style().fg;
+    assert_eq!(buf.cell((pad, 2)).expect("cell").style().fg, app.theme.link.fg, "a link is link-coloured");
+
+    let marker = buf.cell((pad + 2, 4)).expect("cell");
+    assert_eq!(marker.symbol(), "+", "the marker says the line can be opened");
+    assert_eq!(marker.style().fg, plain, "in the colour of ordinary text");
+    assert_ne!(marker.style().fg, app.theme.link.fg, "and not in the link colour");
+    assert!(marker.style().add_modifier.contains(Modifier::UNDERLINED), "underlined as something to open");
+
+    let word = buf.cell((pad + 4, 4)).expect("cell").style();
+    assert_eq!(word.fg, plain, "its words are ordinary text as well");
+    assert!(word.add_modifier.contains(Modifier::UNDERLINED), "and underlined");
+    assert!(
+        !buf.cell((pad, 4)).expect("cell").style().add_modifier.contains(Modifier::UNDERLINED),
+        "the blank columns before the marker are not marked"
+    );
+}
+
+#[test]
+fn the_cursor_on_a_summary_marks_the_whole_line() {
+    let html = "<details><summary>Anything at all</summary>body</details>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 10);
+    app.view.cursor.row = 0;
+    app.view.cursor.col = 6;
+    let buf = draw_buffer(&app, 40, 10);
+    let pad = app.padding_x() as u16;
+    // One target, one highlight: the marker and every word of the line, however
+    // many rows the label wraps over.
+    assert_eq!(
+        buf.cell((pad + 2, 0)).expect("cell").style().bg,
+        app.theme.hovered_link.bg,
+        "the marker joins in"
+    );
+    assert_eq!(
+        buf.cell((pad + 9, 0)).expect("cell").style().bg,
+        app.theme.hovered_link.bg,
+        "and so do the words"
+    );
+    assert_eq!(
+        buf.cell((pad + 30, 0)).expect("cell").style().bg,
+        app.theme.cursor_line.bg,
+        "nothing past the line joins in"
+    );
 }
 
 #[test]

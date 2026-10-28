@@ -21,6 +21,11 @@ underline = true
 fg = "magenta"
 underline = true
 
+# A link that leaves this site: where it goes rather than where you have been.
+[style.external]
+fg = "cyan"
+underline = true
+
 [style.heading]
 fg = "light_green"
 bold = true
@@ -50,6 +55,12 @@ italic = true
 [style.monospace]
 fg = "#d0d0d0"
 bg = "#141414"
+
+# The summary line of a <details> is something to open, not somewhere to go, so
+# it does not wear the link color: the normal text color, underlined, with a +
+# or - in front of it.
+[style.disclosure]
+underline = true
 
 # Image placeholders, labelled with whatever the image says about itself.
 [style.image]
@@ -159,7 +170,8 @@ case_insensitive_search = true
 history_size = 200
 # Blank columns kept between the terminal edge and the page text.
 page_padding_x = 1
-# Copy a yanked link to the terminal clipboard with an OSC 52 escape.
+# Copy what was yanked - a link target, a media address, the page url - to the
+# terminal clipboard with an OSC 52 escape.
 yank_to_clipboard = true
 
 # Embedded and linked stylesheets are applied: display: none and visibility:

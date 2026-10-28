@@ -18,14 +18,16 @@ w3b keys  (i or ? toggles this)
   j / k          down, up        gg / G      top, bottom
   h / l          left, right     0 ^ $       line edges
   Ctrl-d / Ctrl-u  half page     PgDn/PgUp   full page
-  Enter          follow or edit  r           reload
-  Tab            next link       Shift-Tab   prev. link
+  Enter          follow/edit/open  r         reload
+  Tab            next target     Shift-Tab   previous
   o or :         open url        /           search
   n / N          next/prev hit   Esc         cancel
   [ or Backspace back            ]           forward
-  y              link target     w           toggle wrap
+  y              link/media      w           toggle wrap
   g then ...     go-to menu
-  in a field     typing edits, Esc or Enter is done
+  in a field     typing edits it, Esc leaves it
+  Enter there    sends the form, if it asks for a GET
+  on a + or -    Enter shows or hides the lines under it
   q or Ctrl-c    quit            i or ?      this help
 ";
 
@@ -61,10 +63,24 @@ fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
         // Applied last of the text styles so it wins over the colour for <code>.
         out = out.patch(app.theme.monospace);
     }
+    if style.disclosure {
+        // The summary of a <details> is something to open rather than somewhere to
+        // go, so it takes its own style instead of the link color.
+        out = out.patch(app.theme.disclosure);
+    }
     if let Some(index) = link {
-        let visited = app.visited.contains(app.page.links[index].href.as_str())
-            || matches!(&app.page.links[index].follow, crate::page::Follow::Url(url) if app.visited.contains(url.as_str()));
-        out = out.patch(if visited { app.theme.visited } else { app.theme.link });
+        let resolved = &app.page.links[index];
+        let visited = app.visited.contains(resolved.href.as_str())
+            || matches!(&resolved.follow, crate::page::Follow::Url(url) if app.visited.contains(url.as_str()));
+        // A link off the site is coloured by where it goes rather than by whether
+        // it has been read: the colour is the caution, and a visit does not undo it.
+        out = out.patch(if resolved.external {
+            app.theme.external
+        } else if visited {
+            app.theme.visited
+        } else {
+            app.theme.link
+        });
         if style.heading {
             // A heading that happens to be a link keeps the heading's colours; all
             // the link contributes is its underline.
@@ -109,13 +125,31 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
     let visible_height = usize::from(area.height);
     // The link the cursor stands on, so it can get a background of its own.
     // The highlight covers the whole link element, not the word the cursor
-    // happens to sit on: one link is one target even when it wraps rows.
+    // happens to sit on: one link is one target even when it wraps rows. The
+    // summary of a <details> is a target too - one that opens instead of going -
+    // and gets the same cue.
     let hovered: Vec<(usize, usize, usize)> = app
         .page
         .layout
         .link_at(app.view.cursor.row, app.view.cursor.col)
         .map(|link| {
             app.page.layout.links.iter().filter(|p| p.link == link).map(|p| (p.row, p.start, p.end)).collect()
+        })
+        .or_else(|| {
+            app.page.layout.disclosure_at(app.view.cursor.row, app.view.cursor.col).map(|d| {
+                app.page
+                    .layout
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(row, r)| {
+                        r.runs
+                            .iter()
+                            .filter(move |run| run.disclosure == Some(d))
+                            .map(move |run| (row, run.start, run.end()))
+                    })
+                    .collect()
+            })
         })
         .unwrap_or_default();
 

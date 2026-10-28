@@ -10,7 +10,7 @@ use crate::config::{Behavior, Config};
 use crate::error::{Error, NetError};
 use crate::layout::{Layout, LinkPlacement};
 use crate::net::{normalize_target, Fetched, Fetcher};
-use crate::page::{Follow, Page, RenderOptions};
+use crate::page::{Follow, Page, RenderOptions, Submit};
 use crate::status::{self, Status};
 use crate::theme::Theme;
 
@@ -38,7 +38,8 @@ pub struct Cursor {
 pub enum Action {
     None,
     Quit,
-    /// A link target was yanked; the TUI copies it to the clipboard.
+    /// Something was yanked - a link target, the source of an image, the page
+    /// itself; the TUI copies it to the clipboard.
     Yank(String),
 }
 
@@ -68,6 +69,8 @@ pub struct Viewport {
 #[derive(Debug, Clone, Copy)]
 pub struct View {
     pub cursor: Cursor,
+    /// The top layout row drawn. Keys move the cursor and the window follows it;
+    /// the wheel moves the window and leaves the cursor on its line.
     pub scroll: usize,
     pub hscroll: usize,
 }
@@ -492,6 +495,51 @@ impl App {
         self.up(step.max(1));
     }
 
+    /// The wheel: the page slides past the edge of the window and the cursor does
+    /// not move, so it stays on the line you stopped on - the highlight travels up
+    /// the screen with the text rather than chasing the wheel.
+    ///
+    /// The one case that does move it is the page sliding that line out of the
+    /// window: the cursor is then parked at the edge, one `scroll_margin` inside
+    /// the window, so a key never acts on text that is not on screen - and so the
+    /// next `j` finds the cursor where the keys would have left it anyway.
+    pub fn scroll_by(&mut self, lines: isize) {
+        let height = self.page_height();
+        let last_top = self.page.row_count().saturating_sub(height);
+        let top = (self.view.scroll as isize + lines).clamp(0, last_top as isize) as usize;
+        if top == self.view.scroll {
+            return;
+        }
+        self.view.scroll = top;
+        let margin = self.config.behavior.scroll_margin.min(height / 2);
+        let lo = top + margin;
+        let hi = (top + height - 1).saturating_sub(margin);
+        let row = self.view.cursor.row;
+        // The band the keys keep the cursor in - the window minus `scroll_margin`
+        // rows at each edge - is the wheel's too. Park it there rather than at the
+        // bare edge: the cursor stays on screen, the highlight holds still while
+        // the text runs under it, and the next `j` or `k` has no margin to undo.
+        let parked = if hi >= lo {
+            if row < lo || row > hi {
+                Some(row.clamp(lo, hi))
+            } else {
+                None
+            }
+        } else if row < top || row >= top + height {
+            Some(top + height / 2)
+        } else {
+            None
+        };
+        if let Some(row) = parked {
+            self.view.cursor.row = row;
+            self.view.cursor.col = self.view.cursor.desired.min(self.max_col());
+        }
+        // The columns stay the cursor's business. The rows are the wheel's: the
+        // vertical follow-back is deliberately not run here, because a scroll
+        // margin would pull the page straight back down the line it just moved.
+        self.ensure_col_visible();
+    }
+
     pub fn left(&mut self) {
         if self.view.cursor.col > 0 {
             self.view.cursor.col -= 1;
@@ -571,6 +619,13 @@ impl App {
 
     /// Keep the cursor inside the window, respecting `scroll_margin`.
     pub fn ensure_visible(&mut self) {
+        self.ensure_row_visible();
+        self.ensure_col_visible();
+    }
+
+    /// The vertical half: the window moves so the cursor row is inside it, with
+    /// `scroll_margin` rows of context above and below.
+    fn ensure_row_visible(&mut self) {
         let height = self.page_height();
         let rows = self.page.row_count();
         let margin = self.config.behavior.scroll_margin.min(height / 2);
@@ -582,20 +637,23 @@ impl App {
             top = self.view.cursor.row + margin + 1 - height;
         }
         self.view.scroll = top.min(rows.saturating_sub(1));
+    }
 
+    /// The horizontal half: the columns shown follow the cursor's column.
+    fn ensure_col_visible(&mut self) {
         if self.config.behavior.wrap {
             self.view.hscroll = 0;
-        } else {
-            let width = self.row_width(self.view.cursor.row);
-            let visible = self.content_width();
-            if self.view.cursor.col < self.view.hscroll {
-                self.view.hscroll = self.view.cursor.col;
-            } else if self.view.cursor.col >= self.view.hscroll + visible {
-                self.view.hscroll = self.view.cursor.col + 1 - visible;
-            }
-            let limit = width.max(self.view.cursor.col + 1);
-            self.view.hscroll = self.view.hscroll.min(limit);
+            return;
         }
+        let width = self.row_width(self.view.cursor.row);
+        let visible = self.content_width();
+        if self.view.cursor.col < self.view.hscroll {
+            self.view.hscroll = self.view.cursor.col;
+        } else if self.view.cursor.col >= self.view.hscroll + visible {
+            self.view.hscroll = self.view.cursor.col + 1 - visible;
+        }
+        let limit = width.max(self.view.cursor.col + 1);
+        self.view.hscroll = self.view.hscroll.min(limit);
     }
 }
 
@@ -608,14 +666,51 @@ impl App {
 
     /// Start typing into a form field: the caret parks just past its text.
     pub fn focus_field(&mut self, index: usize) {
-        let name = match self.page.doc.fields.get(index) {
-            Some(field) => field.name.clone(),
-            None => "field".to_string(),
+        let name = self
+            .page
+            .doc
+            .fields
+            .get(index)
+            .and_then(|field| {
+                let name = field.name.clone();
+                let name = if name.is_empty() { field.placeholder.clone() } else { name };
+                Some(name).filter(|n| !n.is_empty())
+            })
+            .unwrap_or_else(|| "field".to_string());
+        // The note says what Enter does here: a form that asks for a GET and names
+        // an action is gone to, anywhere else Enter only finishes the typing.
+        let finished = match self.page.submit_target(index) {
+            Submit::Go(_) => "Enter submits, Esc to finish",
+            _ => "Enter or Esc to finish",
         };
         self.editing = Some(index);
         self.mode = Mode::Field;
         self.place_cursor_in_field(index);
-        self.show_message(format!("typing in {name} (Enter or Esc to finish)"), false);
+        self.show_message(format!("typing in {name} ({finished})"), false);
+    }
+
+    /// Enter in a field is its form's submit button: a form that asks for a GET and
+    /// names an action is gone to, with every value of that form in the query.
+    /// Anything else just ends the typing, which is what Esc has always done.
+    pub fn submit_form(&mut self, index: usize) {
+        match self.page.submit_target(index) {
+            Submit::Go(url) => {
+                self.leave_field();
+                self.navigate(&url);
+            }
+            Submit::Method(method) => {
+                self.leave_field();
+                self.show_message(format!("w3b sends GET forms only, this one wants {method}"), true);
+            }
+            Submit::Unsupported(scheme) => {
+                self.leave_field();
+                self.show_message(format!("unsupported form action: {scheme}"), true);
+            }
+            Submit::Nowhere => {
+                self.leave_field();
+                self.message = None;
+            }
+        }
     }
 
     /// Leave field editing without touching what was typed.
@@ -692,11 +787,45 @@ impl App {
         self.link_under_cursor().and_then(|index| self.link_target(index))
     }
 
+    /// The image or media label the cursor is standing on, if any. Not a Tab
+    /// stop and not something Enter acts on: the label is a statement of what is
+    /// there, and `y` is what makes it useful.
+    pub fn media_under_cursor(&self) -> Option<usize> {
+        self.page.layout.media_at(self.view.cursor.row, self.view.cursor.col)
+    }
+
+    /// The `<details>` summary the cursor is standing on, if any.
+    pub fn disclosure_under_cursor(&self) -> Option<usize> {
+        self.page.layout.disclosure_at(self.view.cursor.row, self.view.cursor.col)
+    }
+
+    /// Open or close a `<details>`: its content goes into the lines below the
+    /// summary, and away again when it is closed. The summary keeps its own row,
+    /// so the cursor does not move.
+    pub fn toggle_disclosure(&mut self, index: usize) {
+        let opts = self.render_options();
+        let Some(open) = self.page.toggle_disclosure(index, opts) else { return };
+        let label = self
+            .page
+            .disclosure_label(index)
+            .filter(|l| !l.trim().is_empty())
+            .unwrap_or("details")
+            .to_string();
+        self.clamp();
+        let what = if open { "opened" } else { "closed" };
+        self.show_message(format!("{what} {label}"), false);
+    }
+
     /// Follow the link under the cursor, or report why it cannot be followed.
     pub fn follow_cursor(&mut self) {
         // A form field under the cursor is edited rather than followed.
         if let Some(index) = self.field_under_cursor() {
             self.focus_field(index);
+            return;
+        }
+        // A <details> summary opens and closes rather than going anywhere.
+        if let Some(index) = self.disclosure_under_cursor() {
+            self.toggle_disclosure(index);
             return;
         }
         match self.link_under_cursor() {
@@ -725,10 +854,15 @@ impl App {
         }
     }
 
-    /// Show the target of the link under the cursor without following it.
-    /// Report the link target and hand it to the caller for the clipboard.
+    /// Show what the cursor is standing on - a link's target, or where an image
+    /// or piece of media comes from - and hand it to the caller for the clipboard.
     pub fn yank_cursor(&mut self) -> Option<String> {
-        let target = self.link_under_cursor().and_then(|index| self.link_target(index));
+        let target = self
+            .link_under_cursor()
+            .and_then(|index| self.link_target(index))
+            // An image is often wrapped in a link, and the link is what a click
+            // would use, so it wins when the two share a spot.
+            .or_else(|| self.media_under_cursor().and_then(|index| self.page.media_target(index)));
         match target {
             Some(target) => {
                 self.show_message(format!("yanked: {target}"), false);
@@ -747,8 +881,8 @@ impl App {
         }
     }
 
-    /// Move the cursor to the next link or form field. The cursor standing on
-    /// one makes it the current item, so `Tab` steps past it.
+    /// Move the cursor to the next link, form field or disclosure. The cursor
+    /// standing on one makes it the current item, so `Tab` steps past it.
     pub fn next_link(&mut self) {
         let here = (self.view.cursor.row, self.view.cursor.col);
         let current = self.current_focusable(here);
@@ -774,9 +908,9 @@ impl App {
         self.focusables().into_iter().find(|f| f.0 == here.0 && f.1 <= here.1 && here.1 < f.2)
     }
 
-    /// Everything the cursor can jump to: links and editable fields, in reading
-    /// order, as (row, start, end). A target that covers several runs - a link
-    /// of several words - counts once, from its first cell to its last.
+    /// Everything the cursor can jump to: links, editable fields and disclosures,
+    /// in reading order, as (row, start, end). A target that covers several runs -
+    /// a link of several words - counts once, from its first cell to its last.
     fn focusables(&self) -> Vec<(usize, usize, usize)> {
         // Keyed by kind so link 0 and field 0 cannot collapse into one span.
         let mut spans: BTreeMap<(u8, usize, usize), (usize, usize)> = BTreeMap::new();
@@ -789,6 +923,11 @@ impl App {
             for run in &r.runs {
                 if let Some(field) = run.field {
                     let e = spans.entry((1, field, row)).or_insert((run.start, run.end()));
+                    e.0 = e.0.min(run.start);
+                    e.1 = e.1.max(run.end());
+                }
+                if let Some(disclosure) = run.disclosure {
+                    let e = spans.entry((2, disclosure, row)).or_insert((run.start, run.end()));
                     e.0 = e.0.min(run.start);
                     e.1 = e.1.max(run.end());
                 }
@@ -808,7 +947,7 @@ impl App {
                 self.view.cursor.desired = start;
                 self.ensure_visible();
             }
-            None => self.show_message("no more links or fields", false),
+            None => self.show_message("no more links, fields or disclosures", false),
         }
     }
 }

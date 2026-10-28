@@ -336,21 +336,76 @@ fn mouse_click_follows_a_link() {
 }
 
 #[test]
-fn one_wheel_notch_moves_one_line() {
+fn the_wheel_scrolls_the_page_and_not_the_cursor() {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let wheel = |kind| MouseEvent { kind, column: 4, row: 4, modifiers: KeyModifiers::NONE };
-    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
-    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
-    assert_eq!(app.view.cursor.row, 1, "one notch, one line");
-    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
-    assert_eq!(app.view.cursor.row, 2);
+    // A tall page in a short window: there is somewhere to scroll to.
+    let mut app = fake_app(home_fetcher(), HOME, 70, 10);
+    // Park the cursor in the middle of the window, away from both edges.
+    for _ in 0..5 {
+        app.handle_key(key(KeyCode::Char('j')));
+    }
+    assert_eq!((app.view.scroll, app.view.cursor.row), (0, 5));
+
+    // One notch, one line of page - and the cursor keeps the line it was on.
+    for _ in 0..2 {
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    assert_eq!(app.view.scroll, 2, "two notches, two lines of page");
+    assert_eq!(app.view.cursor.row, 5, "the cursor does not ride along");
+
     app.handle_mouse(wheel(MouseEventKind::ScrollUp));
-    assert_eq!(app.view.cursor.row, 1, "and back up one line");
-    // A click still jumps to the row that was clicked, wheel included.
+    assert_eq!((app.view.scroll, app.view.cursor.row), (1, 5));
+
+    // Scroll its line past the top of the window and the cursor stops at the
+    // margin: from there the highlight holds one screen row while the text runs
+    // under it, and what Enter and y act on is always a line that is on screen.
+    for _ in 0..5 {
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    assert_eq!(app.view.scroll, 6);
+    assert_eq!(
+        app.view.cursor.row,
+        app.view.scroll + app.config.behavior.scroll_margin,
+        "parked inside the window's edge, margin included"
+    );
+
+    // A click still moves the cursor to the row that was clicked.
     app.handle_mouse(wheel(MouseEventKind::Down(MouseButton::Left)));
-    assert_eq!(app.view.cursor.row, 4, "a click moves where it was clicked");
-    app.handle_mouse(wheel(MouseEventKind::ScrollUp));
-    assert_eq!(app.view.cursor.row, 3);
+    assert_eq!(app.view.cursor.row, 10, "a click moves where it was clicked");
+
+    // However hard the wheel is turned, the cursor stays inside the page.
+    for _ in 0..400 {
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    assert_eq!(app.view.scroll, app.page.row_count() - app.page_height());
+    assert!(app.view.cursor.row >= app.view.scroll);
+    assert!(app.view.cursor.row < app.view.scroll + app.page_height());
+
+    // At the top of the page the wheel has nothing left to do.
+    let mut top = fake_app(home_fetcher(), HOME, 70, 10);
+    for _ in 0..5 {
+        top.handle_mouse(wheel(MouseEventKind::ScrollUp));
+    }
+    assert_eq!((top.view.scroll, top.view.cursor.row), (0, 0), "the page does not scroll off the top");
+}
+
+#[test]
+fn a_wheel_then_a_key_does_not_drag_the_page_back() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let wheel = |kind| MouseEvent { kind, column: 4, row: 4, modifiers: KeyModifiers::NONE };
+    let mut app = fake_app(home_fetcher(), HOME, 70, 10);
+    for _ in 0..4 {
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    let (scrolled, parked) = (app.view.scroll, app.view.cursor.row);
+    assert_eq!(parked, scrolled + app.config.behavior.scroll_margin);
+
+    // The wheel parked the cursor where the keys keep it, so the first `j` after a
+    // scroll moves the cursor one line instead of dragging the page back up.
+    app.handle_key(key(KeyCode::Char('j')));
+    assert_eq!(app.view.cursor.row, parked + 1, "one key, one line");
+    assert_eq!(app.view.scroll, scrolled, "the page does not jump back the margin");
 }
 
 #[test]
@@ -500,6 +555,57 @@ fn a_field_being_edited_is_left_behind_when_the_page_changes() {
 }
 
 #[test]
+fn enter_in_a_field_sends_the_get_form_it_belongs_to() {
+    let sent = "https://test.local/search?q=annnab&sort=newest";
+    let mut app = fake_app(
+        FakeFetcher::new()
+            .with_html(
+                FORM,
+                200,
+                "<h1>Search</h1><form action=/search><input name=q value=ann><input name=sort value=newest></form>",
+            )
+            .with_html(sent, 200, "<h1>results for annnab</h1>"),
+        FORM,
+        60,
+        16,
+    );
+    point_at_field(&mut app, 0);
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        app.message.as_ref().expect("a note").text.contains("Enter submits"),
+        "the note says what Enter does"
+    );
+
+    type_str(&mut app, "nab");
+    press(&mut app, KeyCode::Enter);
+    app.settle();
+    assert_eq!(app.page.url, sent, "what was typed and what was already there are both in the query");
+    assert!(page_text(&app).contains("results for annnab"), "{}", page_text(&app));
+    assert_eq!(app.mode, Mode::Normal);
+
+    // The form page is still behind the result, exactly as after a link.
+    press(&mut app, KeyCode::Char('['));
+    app.settle();
+    assert_eq!(app.page.url, FORM, "back returns to the form");
+}
+
+#[test]
+fn a_form_w3b_will_not_send_is_reported_and_stays_put() {
+    let mut app = form_app("<form action=/send method=post><input name=q value=ann></form>");
+    point_at_field(&mut app, 0);
+    press(&mut app, KeyCode::Enter);
+    type_str(&mut app, "typed");
+    press(&mut app, KeyCode::Enter);
+    app.settle();
+
+    assert_eq!(app.mode, Mode::Normal, "the typing is finished either way");
+    assert_eq!(app.page.url, FORM, "nothing was fetched");
+    let note = app.message.as_ref().expect("a note").text.clone();
+    assert!(note.contains("post") && note.contains("GET"), "{note}");
+    assert_eq!(app.page.field_value(0), Some("anntyped"), "what was typed stays on the page");
+}
+
+#[test]
 fn y_without_a_link_yanks_the_page_url() {
     let mut app = form_app("<h1>Plain</h1><p>nothing to click here</p>");
     app.view.cursor.row = 1;
@@ -508,6 +614,69 @@ fn y_without_a_link_yanks_the_page_url() {
     let action = press(&mut app, KeyCode::Char('y'));
     assert_eq!(action, w3b::Action::Yank(FORM.to_string()));
     assert_eq!(app.message.as_ref().expect("a note").text, format!("yanked: {FORM}"));
+}
+
+/// Park the cursor on the first image or media label on the page.
+fn point_at_media(app: &mut w3b::app::App) {
+    let (row, col) = app
+        .page
+        .layout
+        .rows
+        .iter()
+        .enumerate()
+        .find_map(|(row, line)| line.runs.iter().find(|run| run.media.is_some()).map(|run| (row, run.start)))
+        .expect("a media label on the page");
+    app.view.cursor.row = row;
+    app.view.cursor.col = col;
+}
+
+#[test]
+fn y_on_an_image_copies_where_the_image_came_from() {
+    let mut app = form_app("<h1>Plate</h1><p>see <img src=\"/pics/logo.png?v=2\" alt=\"the logo\"></p>");
+    point_at_media(&mut app);
+    assert_eq!(app.media_under_cursor(), Some(0), "standing on the label");
+    let action = press(&mut app, KeyCode::Char('y'));
+    let target = "https://test.local/pics/logo.png?v=2";
+    assert_eq!(
+        action,
+        w3b::Action::Yank(target.to_string()),
+        "the address, finished off with the page's own"
+    );
+    assert_eq!(app.message.as_ref().expect("a note").text, format!("yanked: {target}"));
+}
+
+#[test]
+fn y_on_a_video_or_a_sound_copies_the_clip() {
+    let mut app = form_app("<p><video src=\"/talks/talk.mp4\" title=\"the talk\"></video></p>");
+    point_at_media(&mut app);
+    let action = press(&mut app, KeyCode::Char('y'));
+    let target = "https://test.local/talks/talk.mp4";
+    assert_eq!(action, w3b::Action::Yank(target.to_string()));
+    let shown = page_text(&app);
+    assert!(shown.contains("[video: the talk]"), "the clip is labelled for the eye:\n{shown}");
+}
+
+#[test]
+fn an_image_written_inside_a_link_yanks_the_link_it_was_wrapped_in() {
+    let mut app = form_app("<p><a href=\"/full.png\"><img src=\"/thumb.png\" alt=\"t\"></a></p>");
+    point_at_media(&mut app);
+    assert_eq!(app.link_under_cursor(), Some(0), "the label sits on a link as well");
+    let action = press(&mut app, KeyCode::Char('y'));
+    assert_eq!(
+        action,
+        w3b::Action::Yank("https://test.local/full.png".to_string()),
+        "what a click would use comes first"
+    );
+}
+
+#[test]
+fn an_image_that_names_no_address_yanks_the_page_as_before() {
+    let mut app = form_app("<p><img alt=\"painted by hand\"></p>");
+    point_at_media(&mut app);
+    assert_eq!(app.media_under_cursor(), Some(0));
+    assert_eq!(app.page.media_target(0), None, "the tag names no address");
+    let action = press(&mut app, KeyCode::Char('y'));
+    assert_eq!(action, w3b::Action::Yank(FORM.to_string()));
 }
 
 #[test]
@@ -584,7 +753,7 @@ fn tab_walks_links_and_fields_in_reading_order() {
 
     // Past the last item there is nowhere to go, and it says so.
     press(&mut app, KeyCode::Tab);
-    assert_eq!(app.message.as_ref().expect("a note").text, "no more links or fields");
+    assert_eq!(app.message.as_ref().expect("a note").text, "no more links, fields or disclosures");
 
     // Back over the field, and Enter starts typing in it.
     press(&mut app, KeyCode::BackTab);
@@ -602,7 +771,78 @@ fn tab_walks_links_and_fields_in_reading_order() {
     press(&mut back, KeyCode::BackTab);
     assert_eq!(back.link_under_cursor(), Some(0));
     press(&mut back, KeyCode::BackTab);
-    assert_eq!(back.message.as_ref().expect("a note").text, "no more links or fields");
+    assert_eq!(back.message.as_ref().expect("a note").text, "no more links, fields or disclosures");
+}
+
+/// Which row of the laid-out page holds this text.
+fn row_of(app: &w3b::App, needle: &str) -> usize {
+    (0..app.rows().len())
+        .find(|n| app.rows()[*n].runs.iter().map(|r| r.text.as_str()).collect::<String>().contains(needle))
+        .expect("the line is on the page")
+}
+
+#[test]
+fn enter_opens_a_details_and_closes_it_again() {
+    let html = "<p>see <a href=\"/x\">a link</a></p>\
+        <details><summary>Anything at all</summary><p>Body text</p></details><p>after</p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 60, 16);
+    let closed = app.plain_text();
+    assert!(closed.contains("+ Anything at all"), "the summary line is on the page: {closed}");
+    assert!(!closed.contains("Body text"), "what it holds is not: {closed}");
+
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.disclosure_under_cursor(), Some(0), "tab walked to the summary line");
+    let line = row_of(&app, "+ Anything at all");
+
+    press(&mut app, KeyCode::Enter);
+    let open = app.plain_text();
+    assert!(open.contains("Body text"), "the content went into the lines below: {open}");
+    assert!(open.contains("- Anything at all"), "and the marker says it can be closed");
+    assert_eq!(app.message.as_ref().expect("a note").text, "opened Anything at all");
+    assert_eq!(row_of(&app, "- Anything at all"), line, "the summary keeps its row, so the cursor does too");
+    assert_eq!(app.view.cursor.row, line, "and the cursor really did not move");
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.plain_text(), closed, "Enter again took the content away");
+    assert_eq!(app.message.as_ref().expect("a note").text, "closed Anything at all");
+}
+
+#[test]
+fn a_details_written_open_shows_its_content_and_enter_shuts_it() {
+    let html = "<details open><summary>Anything</summary><p>Body text</p></details>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 12);
+    let open = app.plain_text();
+    assert!(open.contains("- Anything"), "open says so: {open}");
+    assert!(open.contains("Body text"), "and shows what it holds");
+
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.disclosure_under_cursor(), Some(0));
+    press(&mut app, KeyCode::Enter);
+    let closed = app.plain_text();
+    assert!(!closed.contains("Body text"), "Enter closed it: {closed}");
+    assert!(closed.contains("+ Anything"), "and the marker turned back");
+}
+
+#[test]
+fn a_hidden_disclosure_is_nowhere_to_be_found() {
+    // What a closed <details> holds is off the page: not a target for Tab, and not
+    // something search can land on.
+    let html = "<details><summary>Anything</summary><p><a href=\"/deep\">deep link</a></p></details>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 40, 12);
+    assert_eq!(
+        app.page.links.iter().filter(|l| l.href.contains("/deep")).count(),
+        1,
+        "it is in the document"
+    );
+    assert!(app.page.layout.links.is_empty(), "but its link is not on the page");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.disclosure_under_cursor(), Some(0), "tab reaches the summary instead");
+
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.page.layout.links.is_empty(), "opening it puts the link on the page");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.link_under_cursor().map(|l| app.page.links[l].href.clone()), Some("/deep".to_string()));
 }
 
 #[test]

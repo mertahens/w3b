@@ -27,8 +27,10 @@ mail link and a anchor.
   of CSS do matter and are honoured: whether an element is on the page at all,
   and which elements ask for a monospace font (see [CSS](#css)).
 * **Tables** are drawn as box-drawing grids (`┌─┬┐ │ ├┼┤ └┴┘`) with the header
-  rule, wrapped cells and `align` respected; when the terminal is too narrow for
-  a grid they fall back to one line per row.
+  rule, wrapped cells, `align` and `colspan` respected — a cell that spans
+  columns takes the room of the columns it covers and the column lines it covers
+  are not drawn; when the terminal is too narrow for a grid they fall back to one
+  line per row.
 * **Line breaks** follow the elements: a block (`div`, `p`, `h1`, …) ends a line
   and adds an empty one, an inline element (`span`, `a`, `b`, `code`, …) never
   starts or ends a line by itself, and `<br>` breaks the line inside its block
@@ -36,6 +38,16 @@ mail link and a anchor.
 * **Everything inside a list item belongs to it**: a `<li>` whose content is written
   as blocks (`<p>`, `<h2>`, `<pre>`) still has one marker, and its content is indented
   to line up under that item's text. Nested lists indent by depth.
+* **An empty list is not on the page**: an `<ul>`/`<ol>` or an `<li>` with nothing in it -
+  whitespace, a lone `<br>` or an empty nested list at most - shows no marker and takes
+  no line, no blank line and no number in an ordered list.
+* **A `<details>` is a disclosure you open**: while it is closed only its summary line is
+  on the page, marked `+` and underlined in the ordinary text colour (`[style.disclosure]`) -
+  never the link colour, because it is something to open rather than somewhere to go.
+  `Enter` puts what it holds into the lines below, indented one level under the summary,
+  and turns the marker into `-`; `Enter` again takes those lines away. A `<details>` with
+  no `<summary>` gets a line saying `details` to open it from, `<details open>` starts out
+  open, and a nested one waits for its parent.
 * **Where a line breaks is the `display` property's call**: `display: inline` on a
   `div` keeps it in the sentence, `display: block` on a `span` gives it a line of its
   own, `inline-block` counts as inline, and an unknown value leaves the tag's default.
@@ -54,8 +66,20 @@ mail link and a anchor.
   painted with `[style.image]` (black on purple), and stay black-and-underlined
   inside a link thanks to `[style.linked_image]`. Links that point at a `data:` or
   `javascript:` payload are plain text, never link targets.
+* **Sound and video** are labelled the same way, as `[video: …]` and `[audio: …]`:
+  w3b cannot play them, so it says they are there. A `<video>` that offers its
+  clip through `<source>` children is labelled and addressed by the first of them.
+  Whatever the tag was, `y` on its label copies the address it was written with,
+  resolved against the page so the address works on its own — see `y` under Keys.
 * A **link that is a heading** keeps the heading's own colours and only gains the
   link underline, so `<h2><a href=...>` still reads as a heading.
+* A **link that leaves the site** is coloured by where it goes: an `href` whose host
+  is not the page's own takes `[style.external]` (cyan by default), so a glance says
+  whether `Enter` carries you away. The hosts are compared as spelled, so relative
+  links, `#anchors`, `mailto:` and the same host on another port stay in
+  `[style.link]`. An external link keeps its colour once you have read it, where a
+  local one would take `[style.visited]`: what it says is the destination, not the
+  visit.
 * The **status line** at the bottom shows `[status]  url — title  time  percent`
   - the load time can be switched off with `show_load_time = false`. Status comes
   from the HTTP status code (`200 OK`, `404 NOT FOUND`) or a braille spinner and
@@ -99,28 +123,48 @@ printed), `2` for a failed request or a bad config.
 | `0` `^` `$` | line start, first non-blank, line end |
 | `Ctrl-d` `Ctrl-u` | half page down / up |
 | `Ctrl-f` `Ctrl-b`, `PgDn` `PgUp` | page down / up |
-| `Enter` | follow the link under the cursor, or type into the form field under it |
+| `Enter` | follow the link under the cursor, type into the form field under it, or open / close the `<details>` under it |
 | `g` then `g` `e` `o` `i` `u` `h` `r` | go-to menu: top, end, back (out), forward (in), enter a url, home, reload (`Esc` cancels) |
-| `Tab` `Shift-Tab` | next / previous link or form field |
+| `Tab` `Shift-Tab` | next / previous link, form field or `<details>` summary |
 | `o` or `:` | open a url (or a search term) |
 | `/` | search, then `n` `N` for next / previous |
 | `r` | reload |
 | `Backspace` or `[` | back in history |
 | `]` | forward in history |
-| `y` | yank: the link under the cursor, or the page url when nothing is under it. The text goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
+| `y` | yank: the link under the cursor, or the address of the image or clip under it, or the page url when nothing is under it. A label written inside a link yanks the link. The text goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
 | `w` | toggle line wrapping |
 | `i` or `?` | key help |
-| while typing in a field | `Backspace` erases, `Ctrl-u` clears, `Ctrl-w` deletes a word, `Enter` or `Esc` is done |
+| while typing in a field | `Backspace` erases, `Ctrl-u` clears, `Ctrl-w` deletes a word, `Enter` submits the form the field belongs to (or is just done), `Esc` is done |
 | `q`, `Ctrl-c` | quit |
 
 `<input>` and `<textarea>` are editable: move onto one (or press `Tab` to the
 next link and then `Enter`) and type. A `password` field shows dots but keeps
 what you typed, and a value is remembered for as long as you stay on the page -
-navigating away starts over. Nothing is submitted (see
-[Not implemented](#not-implemented-on-purpose-for-now)).
+navigating away starts over.
 
-The mouse wheel moves the cursor one line per notch and left-click follows the link
-under it; disable either with `mouse = false`. The link the
+`Enter` in a field is that form's submit button: a `<form>` that asks for a GET
+(the method when none is written) and names an `action` is gone to, with every
+named field of that form in the query string, so
+`<form action=/search><input name=q value=ann><input name=sort value=new>` and
+a typed `nab` fetches `/search?q=annnab&sort=new`. A field with no `name` is
+left out, an `action` that already has a query keeps it, and the page the form
+was on stays in the history, so `[` comes back to it. A form that asks for
+another method, or names no action, is not sent and a note says so.
+
+A `<details>` summary is opened the same way: `Tab` reaches it, `Enter` lays its
+content in below the line, `Enter` again closes it. The summary keeps its row,
+so the cursor never moves and nothing else on the page shifts. Opening one never
+re-fetches the page: what it holds was there all along, only not shown.
+
+The mouse wheel scrolls the page one line per notch and leaves the cursor where it
+is; left-click follows the link under it, or opens the `<details>` under it; disable
+either with `mouse = false`. One notch stays one line even on a terminal that reports
+it as three events - WezTerm's wheel multiplier does exactly that out of the box -
+because wheel events arriving in one burst are folded into the one step they
+describe. The cursor only moves when the page slides its line off the window, and
+then it stops one scroll margin inside it, so `Enter` and `y` always act on a line
+that is on screen. The link or
+summary the
 cursor stands on is highlighted with `[style.hovered_link]` — the link colour
 moves from the ink to the background, with black text — and its target is shown
 in the status line as `-> url`. The cursor is not tied to the length of its line:
@@ -146,6 +190,7 @@ an error, so typos are caught instead of ignored.
 text = {}                     # body text
 link = { fg = "blue", underline = true }
 visited = { fg = "magenta", underline = true }
+external = { fg = "cyan", underline = true }
 heading = { fg = "light_green", bold = true }
 strong = { bold = true }
 emphasis = { italic = true }
@@ -156,6 +201,7 @@ placeholder = { fg = "dark_gray", italic = true }
 image = { fg = "black", bg = "magenta", italic = true }
 linked_image = { fg = "black", underline = true }
 monospace = { fg = "#d0d0d0", bg = "#141414" }
+disclosure = { underline = true }
 hovered_link = { fg = "black", bg = "blue" }
 cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
@@ -309,6 +355,16 @@ terminal.
 ## Not implemented (on purpose, for now)
 
 JavaScript, CSS colours and layout (only visibility and `font-family` are
-consulted, see [CSS](#css)), frames, form submission (fields are typed into,
-never sent), cookies,
+consulted, see [CSS](#css)), frames, form methods other than GET (a form is
+sent by `Enter` in one of its fields only when it asks for a GET), cookies,
 `mailto:`/`tel:` handlers, image display, HTTPS client certificates, and tabs.
+
+## How it was made
+
+Vibecoded, all of it, and completely local. Every line here was written by a
+model at the keyboard: [pi](https://pi.dev) as the agent harness, driving Qwen
+Flash Next (`qwen3.8-flash-next`, IQ3_S quant) served by Strata on this machine.
+No cloud endpoint, no API key, nothing uploaded - the hand-written part stops at
+the prompts. What decides that a feature is done is the checks above: fmt, clippy
+with `-D warnings`, the unit and integration tests, the snapshots, and the
+pseudo-terminal smoke run.

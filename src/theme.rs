@@ -12,6 +12,8 @@ pub struct Theme {
     pub text: Style,
     pub link: Style,
     pub visited: Style,
+    /// A link to another site than the one the page is on.
+    pub external: Style,
     pub heading: Style,
     pub strong: Style,
     pub emphasis: Style,
@@ -20,6 +22,8 @@ pub struct Theme {
     pub divider: Style,
     pub placeholder: Style,
     pub monospace: Style,
+    /// A `<details>` summary: plain text with an underline, and nothing else about it.
+    pub disclosure: Style,
     pub cursor: Style,
     pub cursor_line: Style,
     pub search_match: Style,
@@ -80,6 +84,7 @@ impl Theme {
             text: spec(&c.text, "text")?,
             link: spec(&c.link, "link")?,
             visited: spec(&c.visited, "visited")?,
+            external: spec(&c.external, "external")?,
             heading: spec(&c.heading, "heading")?,
             strong: spec(&c.strong, "strong")?,
             emphasis: spec(&c.emphasis, "emphasis")?,
@@ -88,6 +93,7 @@ impl Theme {
             divider: spec(&c.divider, "divider")?,
             placeholder: spec(&c.placeholder, "placeholder")?,
             monospace: spec(&c.monospace, "monospace")?,
+            disclosure: spec(&c.disclosure, "disclosure")?,
             cursor: spec(&c.cursor, "cursor")?,
             cursor_line: spec(&c.cursor_line, "cursor_line")?,
             search_match: spec(&c.search_match, "search_match")?,

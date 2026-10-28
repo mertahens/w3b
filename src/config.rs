@@ -52,6 +52,8 @@ pub struct StyleConfig {
     pub text: StyleSpec,
     pub link: StyleSpec,
     pub visited: StyleSpec,
+    /// A link to another site than the page it is on.
+    pub external: StyleSpec,
     pub heading: StyleSpec,
     pub strong: StyleSpec,
     pub emphasis: StyleSpec,
@@ -75,6 +77,9 @@ pub struct StyleConfig {
     pub linked_image: StyleSpec,
     /// Elements that ask for a monospace font, marked over the text itself.
     pub monospace: StyleSpec,
+    /// The summary line of a `<details>`: plain text with an underline, because it
+    /// is something to open rather than somewhere to go.
+    pub disclosure: StyleSpec,
     /// The link the cursor is standing on.
     pub hovered_link: StyleSpec,
     pub status: StatusStyle,
@@ -99,7 +104,8 @@ pub struct Behavior {
     pub history_size: usize,
     /// Blank columns kept between the terminal edge and the page text.
     pub page_padding_x: usize,
-    /// Copy yanked links to the terminal clipboard with OSC 52.
+    /// Copy what was yanked - a link, a media address, the page - to the
+    /// terminal clipboard with OSC 52.
     pub yank_to_clipboard: bool,
     /// How many linked stylesheets a page may pull in at most.
     pub max_stylesheets: usize,
@@ -191,6 +197,7 @@ impl Config {
             ("text", &self.style.text),
             ("link", &self.style.link),
             ("visited", &self.style.visited),
+            ("external", &self.style.external),
             ("heading", &self.style.heading),
             ("strong", &self.style.strong),
             ("emphasis", &self.style.emphasis),
@@ -208,6 +215,7 @@ impl Config {
             ("position", &self.style.position),
             ("scrollbar", &self.style.scrollbar),
             ("border", &self.style.border),
+            ("disclosure", &self.style.disclosure),
         ];
         for (name, spec) in groups {
             check_spec(spec, name)?;

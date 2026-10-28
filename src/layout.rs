@@ -16,6 +16,8 @@ pub struct CellStyle {
     pub border: bool,
     pub heading: bool,
     pub placeholder: bool,
+    /// The text of a `<details>` summary: underlined as something to open.
+    pub disclosure: bool,
     /// Monospace font: the renderer greys the whole line.
     pub mono: bool,
 }
@@ -29,6 +31,12 @@ pub struct Run {
     pub link: Option<usize>,
     /// Set for the text of an editable form field (index into `Doc::fields`).
     pub field: Option<usize>,
+    /// Set on the summary line of a `<details>` (index into `Doc::disclosures`):
+    /// Enter opens or closes what follows it.
+    pub disclosure: Option<usize>,
+    /// Set on the label of an image or piece of media (index into `Doc::media`):
+    /// `y` on it copies where the thing comes from.
+    pub media: Option<usize>,
 }
 
 impl Run {
@@ -100,6 +108,28 @@ impl Layout {
         })
     }
 
+    /// The `<details>` whose summary text covers this cell, if any.
+    pub fn disclosure_at(&self, row: usize, col: usize) -> Option<usize> {
+        self.rows.get(row)?.runs.iter().find_map(|run| {
+            if run.start <= col && col < run.end() {
+                run.disclosure
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The index into `Doc::media` of the image or media label under the cursor.
+    pub fn media_at(&self, row: usize, col: usize) -> Option<usize> {
+        self.rows.get(row)?.runs.iter().find_map(|run| {
+            if run.start <= col && col < run.end() {
+                run.media
+            } else {
+                None
+            }
+        })
+    }
+
     /// The row a field's text ends on and the column just past it, which is
     /// where the caret belongs while the field is being typed into.
     pub fn field_end(&self, index: usize) -> Option<(usize, usize)> {
@@ -123,6 +153,14 @@ pub fn layout(doc: &Doc, width: usize, tab_width: usize, wrap: bool) -> Layout {
 
     let mut previous: Option<BlockKind> = None;
     for block in &doc.blocks {
+        // A closed <details> keeps its content off the rows entirely - but the row
+        // table stays indexed by block, so an anchor into it still resolves.
+        if let Some(disclosure) = block.hidden_by {
+            if !doc.is_open(disclosure) {
+                out.block_rows.push(out.rows.len());
+                continue;
+            }
+        }
         // Blank line between blocks, except inside a <pre> run or between two
         // list items, where the marker already separates the lines.
         let same_group = matches!(
@@ -149,12 +187,22 @@ pub fn layout(doc: &Doc, width: usize, tab_width: usize, wrap: bool) -> Layout {
                 let pad = " ".repeat(indent + (depth as usize - 1) * 2);
                 let prefix = pad.clone() + &marker + " ";
                 let cont = pad + &" ".repeat(marker.width() + 1);
-                layout_flow_inner(&mut out, block, prefix, cont, opts, heading > 0);
+                layout_flow_inner(&mut out, block, prefix, cont, opts, heading > 0, None);
             }
             BlockKind::ItemCont { depth, marker } => {
                 // Continuation of an open item: no marker, indent up to its text.
                 let pad = " ".repeat(indent + (depth as usize - 1) * 2 + marker as usize + 1);
-                layout_flow_inner(&mut out, block, pad.clone(), pad, opts, false);
+                layout_flow_inner(&mut out, block, pad.clone(), pad, opts, false, None);
+            }
+            BlockKind::Summary { index } => {
+                // The `+`/`-` is drawn here rather than kept in the document: it says
+                // what the line does, so opening the disclosure turns it around on
+                // its own, and the lines it holds go in below the summary.
+                let glyph = if doc.is_open(index) { "-" } else { "+" };
+                let pad = " ".repeat(indent);
+                let prefix = pad.clone() + glyph + " ";
+                let cont = pad + "  ";
+                layout_flow_inner(&mut out, block, prefix, cont, opts, false, Some(index));
             }
             BlockKind::Heading(_) => layout_flow(&mut out, block, " ".repeat(indent), opts),
             _ => layout_flow(&mut out, block, " ".repeat(indent), opts),
@@ -179,6 +227,8 @@ fn divider_row(width: usize) -> Row {
             style: CellStyle { muted: true, ..CellStyle::default() },
             link: None,
             field: None,
+            disclosure: None,
+            media: None,
         }],
         width,
     }
@@ -192,13 +242,23 @@ fn layout_pre(out: &mut Layout, block: &Block, indent: usize, opts: Options) {
         style: CellStyle { code: true, ..CellStyle::default() },
         link: None,
         field: None,
+        disclosure: None,
+        media: None,
     };
     let col = indent_run.width();
     let mut row = Row { runs: vec![indent_run], width: col };
     for piece in &block.pieces {
         let style = style_of(piece, false);
         let text = expand_tabs(&piece.text, opts.tab_width);
-        let run = Run { text, start: col, style, link: piece.link, field: piece.field };
+        let run = Run {
+            text,
+            start: col,
+            style,
+            link: piece.link,
+            field: piece.field,
+            disclosure: piece.disclosure,
+            media: piece.media,
+        };
         if let Some(link) = piece.link {
             out.links.push(LinkPlacement { link, row: out.rows.len(), start: col, end: run.end() });
         }
@@ -210,7 +270,7 @@ fn layout_pre(out: &mut Layout, block: &Block, indent: usize, opts: Options) {
 
 fn layout_flow(out: &mut Layout, block: &Block, prefix: String, opts: Options) {
     let cont = prefix.clone();
-    layout_flow_inner(out, block, prefix, cont, opts, matches!(block.kind, BlockKind::Heading(_)))
+    layout_flow_inner(out, block, prefix, cont, opts, matches!(block.kind, BlockKind::Heading(_)), None)
 }
 
 fn layout_flow_inner(
@@ -220,11 +280,47 @@ fn layout_flow_inner(
     cont: String,
     opts: Options,
     heading: bool,
+    marker: Option<usize>,
 ) {
-    let cont_run = Run { text: cont.clone(), start: 0, style: CellStyle::default(), link: None, field: None };
-    let indent_run =
-        Run { text: prefix.clone(), start: 0, style: CellStyle::default(), link: None, field: None };
-    let mut row = Row { runs: vec![indent_run.clone()], width: prefix.width() };
+    // A marker belongs to what it marks: the `+` of a disclosure is part of the
+    // line Enter works on, and wears the style of the words next to it. The blank
+    // columns in front of it are not part of the marker, so an underline - or any
+    // other marking - starts at the marker itself.
+    let marker_style = CellStyle { disclosure: marker.is_some(), ..CellStyle::default() };
+    let cont_run = Run {
+        text: cont.clone(),
+        start: 0,
+        style: CellStyle::default(),
+        link: None,
+        field: None,
+        disclosure: marker,
+        media: None,
+    };
+    let pad = prefix.chars().take_while(|c| *c == ' ').count();
+    let mut indent_runs = Vec::new();
+    if pad > 0 {
+        indent_runs.push(Run {
+            text: prefix[..pad].to_string(),
+            start: 0,
+            style: CellStyle::default(),
+            link: None,
+            field: None,
+            disclosure: marker,
+            media: None,
+        });
+    }
+    if pad < prefix.len() {
+        indent_runs.push(Run {
+            text: prefix[pad..].to_string(),
+            start: pad,
+            style: marker_style,
+            link: None,
+            field: None,
+            disclosure: marker,
+            media: None,
+        });
+    }
+    let mut row = Row { runs: indent_runs, width: prefix.width() };
     let mut col = prefix.width();
 
     let mut after_break = false;
@@ -253,7 +349,15 @@ fn layout_flow_inner(
                     col = push_run(
                         out,
                         &mut row,
-                        Run { text: " ".into(), start: col, style, link: piece.link, field: piece.field },
+                        Run {
+                            text: " ".into(),
+                            start: col,
+                            style,
+                            link: piece.link,
+                            field: piece.field,
+                            disclosure: piece.disclosure,
+                            media: piece.media,
+                        },
                     );
                     continue;
                 }
@@ -275,7 +379,15 @@ fn layout_flow_inner(
                         col = push_run(
                             out,
                             &mut row,
-                            Run { text: part, start: col, style, link: piece.link, field: piece.field },
+                            Run {
+                                text: part,
+                                start: col,
+                                style,
+                                link: piece.link,
+                                field: piece.field,
+                                disclosure: piece.disclosure,
+                                media: piece.media,
+                            },
                         );
                         if i < last {
                             trim_and_push(out, std::mem::take(&mut row));
@@ -289,7 +401,15 @@ fn layout_flow_inner(
             col = push_run(
                 out,
                 &mut row,
-                Run { text: token.text, start: col, style, link: piece.link, field: piece.field },
+                Run {
+                    text: token.text,
+                    start: col,
+                    style,
+                    link: piece.link,
+                    field: piece.field,
+                    disclosure: piece.disclosure,
+                    media: piece.media,
+                },
             );
         }
     }
@@ -333,10 +453,11 @@ fn style_of(piece: &Piece, heading: bool) -> CellStyle {
         italic: piece.italic,
         code: piece.code,
         muted: piece.muted,
-        image: piece.image,
+        image: piece.media.is_some(),
         border: false,
         heading,
         placeholder: false,
+        disclosure: piece.disclosure.is_some(),
         mono: piece.mono,
     }
 }
@@ -405,10 +526,63 @@ fn hard_split(text: &str, chunk: usize) -> Vec<String> {
 
 // --- tables ---------------------------------------------------------------
 
-/// One table row drawn as a grid: `| cell | cell |` with box-drawing rules.
+/// One table row drawn as a grid: `| cell | cell |` with box-drawing rules, one
+/// column line for every column and none where a `colspan` covers it.
+#[derive(Debug, Clone, Copy)]
+struct Slot<'a> {
+    cell: Option<&'a crate::dom::TableCell>,
+    at: usize,
+    span: usize,
+}
+
+/// A row spread over `cols` columns: its cells in order with their spans clamped
+/// to what is left, and an empty slot for every column nothing was written in.
+fn row_slots(row: &[crate::dom::TableCell], cols: usize) -> Vec<Slot<'_>> {
+    let mut slots = Vec::with_capacity(row.len());
+    let mut at = 0;
+    for cell in row {
+        if at >= cols {
+            // Cells past the last column have no room left for them.
+            break;
+        }
+        let span = cell.span.min(cols - at);
+        slots.push(Slot { cell: Some(cell), at, span });
+        at += span;
+    }
+    while at < cols {
+        slots.push(Slot { cell: None, at, span: 1 });
+        at += 1;
+    }
+    slots
+}
+
+/// Which boundaries between columns a row reaches over: where a cell covers two
+/// columns there is no line between them. Indexed by the column on the left.
+fn crossed_boundaries(row: &[crate::dom::TableCell], cols: usize) -> Vec<bool> {
+    let mut crossed = vec![false; cols.saturating_sub(1)];
+    for slot in row_slots(row, cols) {
+        if slot.cell.is_some() {
+            for b in slot.at..slot.at + slot.span - 1 {
+                if b < crossed.len() {
+                    crossed[b] = true;
+                }
+            }
+        }
+    }
+    crossed
+}
+
+/// The room a slot has for its text: the columns it covers plus the gutters and
+/// the column lines that fall inside it.
+fn slot_width(widths: &[usize], gutter: usize, at: usize, span: usize) -> usize {
+    widths[at..at + span].iter().sum::<usize>() + span * gutter + span - 1 - gutter
+}
+/// The columns of a row that a cell reaches over are laid out as one slot.
 fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: Options) {
     let Some(table) = doc.tables.get(index) else { return };
-    let cols = table.rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    // A `colspan` covers columns, so the grid is counted in columns rather than
+    // in cells.
+    let cols = table.rows.iter().map(|r| r.iter().map(|c| c.span).sum::<usize>()).max().unwrap_or(0);
     if cols == 0 {
         return;
     }
@@ -421,8 +595,27 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
     let avail = opts.width - indent - (cols + 1);
     let mut natural = vec![1usize; cols];
     for row in &table.rows {
-        for (c, cell) in row.iter().enumerate() {
-            natural[c] = natural[c].max(cell.text_width().max(1));
+        for slot in row_slots(row, cols) {
+            if slot.span == 1 {
+                if let Some(cell) = slot.cell {
+                    natural[slot.at] = natural[slot.at].max(cell.text_width().max(1));
+                }
+            }
+        }
+    }
+    // A cell over several columns wants room as well: whatever it needs past the
+    // columns it covers is shared out between them.
+    for row in &table.rows {
+        for slot in row_slots(row, cols) {
+            let Some(cell) = slot.cell else { continue };
+            if slot.span < 2 {
+                continue;
+            }
+            let covered = natural[slot.at..slot.at + slot.span].iter().sum::<usize>() + slot.span - 1;
+            let extra = cell.text_width().saturating_sub(covered);
+            for (k, column) in natural[slot.at..slot.at + slot.span].iter_mut().enumerate() {
+                *column += extra / slot.span + usize::from(k < extra % slot.span);
+            }
         }
     }
     // One blank column on each side of the cell text, when there is room.
@@ -430,33 +623,53 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
     let widths = fit_columns(&natural, avail.saturating_sub(cols * gutter));
     let left_gutter = gutter / 2;
     let right_gutter = gutter - left_gutter;
-
-    table_rule(out, &pad, &widths, gutter, '\u{250c}', '\u{252c}', '\u{2510}');
+    // Where the cells of each row cover a boundary, the rules and the column lines
+    // have to leave it out.
+    let crossed: Vec<Vec<bool>> = table.rows.iter().map(|r| crossed_boundaries(r, cols)).collect();
+    table_rule(
+        out,
+        &pad,
+        &widths,
+        gutter,
+        Corners { left: '\u{250c}', mid: '\u{252c}', right: '\u{2510}' },
+        &crossed[0],
+    );
     for (ri, row) in table.rows.iter().enumerate() {
         if ri > 0 {
-            table_rule(out, &pad, &widths, gutter, '\u{251c}', '\u{253c}', '\u{2524}');
+            // A rule breaks where a cell does not cover the boundary in both rows.
+            let covered: Vec<bool> =
+                crossed[ri - 1].iter().zip(&crossed[ri]).map(|(over, under)| *over || *under).collect();
+            table_rule(
+                out,
+                &pad,
+                &widths,
+                gutter,
+                Corners { left: '\u{251c}', mid: '\u{253c}', right: '\u{2524}' },
+                &covered,
+            );
         }
-        let mut cells: Vec<Vec<Vec<Run>>> = Vec::with_capacity(cols);
-        let mut aligns: Vec<crate::dom::Align> = Vec::with_capacity(cols);
-        let mut bases: Vec<CellStyle> = Vec::with_capacity(cols);
-        // Indexed by column on purpose: cells, widths, alignments and bases all
-        // have to line up per column.
-        #[allow(clippy::needless_range_loop)]
-        for c in 0..cols {
-            match row.get(c) {
+        let slots = row_slots(row, cols);
+        // The room each slot has for its text: its own columns, plus the gutters
+        // and the column lines a `colspan` covers.
+        let wide: Vec<usize> = slots.iter().map(|s| slot_width(&widths, gutter, s.at, s.span)).collect();
+        let mut lines: Vec<Vec<Vec<Run>>> = Vec::with_capacity(slots.len());
+        let mut aligns: Vec<crate::dom::Align> = Vec::with_capacity(slots.len());
+        let mut bases: Vec<CellStyle> = Vec::with_capacity(slots.len());
+        for (s, slot) in slots.iter().enumerate() {
+            match slot.cell {
                 Some(cell) => {
                     aligns.push(cell.align);
                     bases.push(cell.pieces.first().map(|p| style_of(p, false)).unwrap_or_default());
-                    cells.push(wrap_cell(cell, widths[c]));
+                    lines.push(wrap_cell(cell, wide[s]));
                 }
                 None => {
                     aligns.push(crate::dom::Align::Left);
                     bases.push(CellStyle::default());
-                    cells.push(vec![Vec::new()]);
+                    lines.push(vec![Vec::new()]);
                 }
             }
         }
-        let height = cells.iter().map(|lines| lines.len()).max().unwrap_or(1);
+        let height = lines.iter().map(|l| l.len()).max().unwrap_or(1);
         for li in 0..height {
             let mut runs: Vec<Run> = Vec::new();
             let mut col = 0usize;
@@ -467,25 +680,30 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                     style: CellStyle::default(),
                     link: None,
                     field: None,
+                    disclosure: None,
+                    media: None,
                 });
             }
             push_border(&mut runs, &mut col, '\u{2502}');
-            for c in 0..cols {
+            for s in 0..slots.len() {
+                let style = bases[s];
                 if left_gutter > 0 {
                     runs.push(Run {
                         text: " ".repeat(left_gutter),
                         start: col,
-                        style: bases[c],
+                        style,
                         link: None,
                         field: None,
+                        disclosure: None,
+                        media: None,
                     });
                     col += left_gutter;
                 }
                 let cell_start = col;
-                let line = cells[c].get(li).cloned().unwrap_or_default();
+                let line = lines[s].get(li).cloned().unwrap_or_default();
                 let used: usize = line.iter().map(|r| r.text.width()).sum();
-                let slack = widths[c].saturating_sub(used);
-                let left_pad = match aligns[c] {
+                let slack = wide[s].saturating_sub(used);
+                let left_pad = match aligns[s] {
                     crate::dom::Align::Right => slack,
                     crate::dom::Align::Center => slack / 2,
                     crate::dom::Align::Left => 0,
@@ -494,9 +712,11 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                     runs.push(Run {
                         text: " ".repeat(left_pad),
                         start: col,
-                        style: bases[c],
+                        style,
                         link: None,
                         field: None,
+                        disclosure: None,
+                        media: None,
                     });
                     col += left_pad;
                 }
@@ -516,26 +736,32 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
                         style: run.style,
                         link: run.link,
                         field: run.field,
+                        disclosure: run.disclosure,
+                        media: run.media,
                     });
                     col += width;
                 }
-                if col < cell_start + widths[c] {
+                if col < cell_start + wide[s] {
                     runs.push(Run {
-                        text: " ".repeat(cell_start + widths[c] - col),
+                        text: " ".repeat(cell_start + wide[s] - col),
                         start: col,
-                        style: bases[c],
+                        style,
                         link: None,
                         field: None,
+                        disclosure: None,
+                        media: None,
                     });
-                    col = cell_start + widths[c];
+                    col = cell_start + wide[s];
                 }
                 if right_gutter > 0 {
                     runs.push(Run {
                         text: " ".repeat(right_gutter),
                         start: col,
-                        style: bases[c],
+                        style,
                         link: None,
                         field: None,
+                        disclosure: None,
+                        media: None,
                     });
                     col += right_gutter;
                 }
@@ -544,7 +770,15 @@ fn layout_table(out: &mut Layout, doc: &Doc, index: usize, indent: usize, opts: 
             out.rows.push(Row { runs, width: col });
         }
     }
-    table_rule(out, &pad, &widths, gutter, '\u{2514}', '\u{2534}', '\u{2518}');
+    let last = crossed.last().map(Vec::as_slice).unwrap_or(&[]);
+    table_rule(
+        out,
+        &pad,
+        &widths,
+        gutter,
+        Corners { left: '\u{2514}', mid: '\u{2534}', right: '\u{2518}' },
+        last,
+    );
 }
 
 fn push_border(runs: &mut Vec<Run>, col: &mut usize, ch: char) {
@@ -554,8 +788,19 @@ fn push_border(runs: &mut Vec<Run>, col: &mut usize, ch: char) {
         style: CellStyle { border: true, ..CellStyle::default() },
         link: None,
         field: None,
+        disclosure: None,
+        media: None,
     });
     *col += 1;
+}
+
+/// The three glyphs of a horizontal rule: where it starts, where it meets a column
+/// line and where it ends.
+#[derive(Debug, Clone, Copy)]
+struct Corners {
+    left: char,
+    mid: char,
+    right: char,
 }
 
 fn table_rule(
@@ -563,9 +808,8 @@ fn table_rule(
     pad: &str,
     widths: &[usize],
     gutter: usize,
-    left: char,
-    mid: char,
-    right: char,
+    corners: Corners,
+    covered: &[bool],
 ) {
     let mut runs: Vec<Run> = Vec::new();
     let mut col = 0usize;
@@ -576,9 +820,11 @@ fn table_rule(
             style: CellStyle::default(),
             link: None,
             field: None,
+            disclosure: None,
+            media: None,
         });
     }
-    let mut ch = left;
+    let mut ch = corners.left;
     for (i, w) in widths.iter().enumerate() {
         push_border(&mut runs, &mut col, ch);
         runs.push(Run {
@@ -587,11 +833,21 @@ fn table_rule(
             style: CellStyle { border: true, ..CellStyle::default() },
             link: None,
             field: None,
+            disclosure: None,
+            media: None,
         });
         col += w + gutter;
-        ch = if i + 1 == widths.len() { right } else { mid };
+        // A cell that covers this boundary hides the column line, so the rule runs
+        // on unbroken instead of meeting it at a junction.
+        ch = if i + 1 == widths.len() {
+            corners.right
+        } else if covered.get(i).copied().unwrap_or(false) {
+            '\u{2500}'
+        } else {
+            corners.mid
+        };
     }
-    push_border(&mut runs, &mut col, right);
+    push_border(&mut runs, &mut col, corners.right);
     out.rows.push(Row { runs, width: col });
 }
 
@@ -640,8 +896,20 @@ fn wrap_cell(cell: &crate::dom::TableCell, width: usize) -> Vec<Vec<Run>> {
     lines
 }
 
+/// A word inside a table cell, with everything the piece it came from carries:
+/// a cell is laid out word by word, and the words of an image label still have
+/// to say which image they spell.
+#[derive(Debug, Clone)]
+struct CellWord {
+    text: String,
+    style: CellStyle,
+    link: Option<usize>,
+    field: Option<usize>,
+    media: Option<usize>,
+}
+
 fn wrap_cell_lines(pieces: &[crate::dom::Piece], header: bool, width: usize) -> Vec<Vec<Run>> {
-    let mut tokens: Vec<(String, CellStyle, Option<usize>, Option<usize>)> = Vec::new();
+    let mut words: Vec<CellWord> = Vec::new();
     for piece in pieces {
         let mut style = style_of(piece, false);
         if header {
@@ -649,20 +917,20 @@ fn wrap_cell_lines(pieces: &[crate::dom::Piece], header: bool, width: usize) -> 
         }
         for token in tokens_for(piece.text.clone(), piece.field.is_some()) {
             let text = if token.space { " ".to_string() } else { token.text.clone() };
-            if text == " " && tokens.last().map(|t| t.0 == " ").unwrap_or(false) {
+            if text == " " && words.last().map(|w| w.text == " ").unwrap_or(false) {
                 continue;
             }
-            tokens.push((text, style, piece.link, piece.field));
+            words.push(CellWord { text, style, link: piece.link, field: piece.field, media: piece.media });
         }
     }
-    while tokens.first().map(|t| t.0 == " ").unwrap_or(false) {
-        tokens.remove(0);
+    while words.first().map(|w| w.text == " ").unwrap_or(false) {
+        words.remove(0);
     }
 
     let mut lines: Vec<Vec<Run>> = Vec::new();
     let mut line: Vec<Run> = Vec::new();
     let mut col = 0usize;
-    for (text, style, link, field) in tokens {
+    for CellWord { text, style, link, field, media } in words {
         let w = text.width();
         if w == 0 {
             continue;
@@ -674,7 +942,15 @@ fn wrap_cell_lines(pieces: &[crate::dom::Piece], header: bool, width: usize) -> 
             for g in text.graphemes(true) {
                 let gw = g.width().max(1);
                 if cw + gw > width && cw > 0 {
-                    line.push(Run { text: std::mem::take(&mut chunk), start: col, style, link, field });
+                    line.push(Run {
+                        text: std::mem::take(&mut chunk),
+                        start: col,
+                        style,
+                        link,
+                        field,
+                        disclosure: None,
+                        media,
+                    });
                     col += cw;
                     lines.push(std::mem::take(&mut line));
                     cw = 0;
@@ -683,7 +959,7 @@ fn wrap_cell_lines(pieces: &[crate::dom::Piece], header: bool, width: usize) -> 
                 cw += gw;
             }
             if cw > 0 {
-                line.push(Run { text: chunk, start: col, style, link, field });
+                line.push(Run { text: chunk, start: col, style, link, field, disclosure: None, media });
                 col += cw;
             }
             continue;
@@ -695,7 +971,7 @@ fn wrap_cell_lines(pieces: &[crate::dom::Piece], header: bool, width: usize) -> 
                 continue;
             }
         }
-        line.push(Run { text, start: col, style, link, field });
+        line.push(Run { text, start: col, style, link, field, disclosure: None, media });
         col += w;
     }
     if !line.is_empty() {
@@ -723,14 +999,15 @@ fn table_fallback(out: &mut Layout, table: &crate::dom::Table, indent: usize, op
                     italic: false,
                     code: false,
                     muted: true,
-                    image: false,
                     field: None,
+                    disclosure: None,
+                    media: None,
                     hard_break: false,
                 });
             }
             pieces.extend(cell.pieces.iter().cloned());
         }
-        let block = Block { kind: crate::dom::BlockKind::Paragraph, indent: 0, pieces };
+        let block = Block { kind: crate::dom::BlockKind::Paragraph, indent: 0, pieces, hidden_by: None };
         layout_flow(out, &block, " ".repeat(indent), opts);
     }
 }
@@ -827,8 +1104,131 @@ mod tests {
     }
 
     #[test]
+    fn an_item_with_nothing_in_it_adds_no_row() {
+        let laid = layout(&crate::dom::parse("<ul><li>one</li><li>  </li><li>two</li></ul>"), 40, 4, true);
+        assert_eq!(rows(&laid), ["\u{2022} one", "\u{2022} two"]);
+    }
+
+    #[test]
     fn a_pre_inside_an_item_is_indented_and_takes_the_marker() {
         let laid = layout(&crate::dom::parse("<ul><li><pre>first\nsecond</pre></li></ul>"), 40, 4, true);
         assert_eq!(rows(&laid), ["\u{2022} first", "  second"]);
+    }
+
+    #[test]
+    fn a_summary_line_marks_its_disclosure_end_to_end() {
+        let doc = dom::parse("<details><summary>Anything here</summary><p>Body</p></details>");
+        let laid = layout(&doc, 40, 4, true);
+        assert_eq!(rows(&laid), ["  + Anything here"], "a closed one shows only its line");
+        assert_eq!(laid.disclosure_at(0, 2), Some(0), "Enter on the marker opens it");
+        assert_eq!(laid.disclosure_at(0, 6), Some(0), "Enter on its words opens it too");
+        assert_eq!(laid.disclosure_at(0, 0), Some(0), "so does the blank in front of it");
+        let row = &laid.rows[0];
+        assert!(!row.runs[0].style.disclosure, "the indent does not wear the marking");
+        assert!(row.runs[1].style.disclosure, "the marker does");
+        assert!(row.runs[2].style.disclosure, "and so do the words");
+    }
+
+    #[test]
+    fn an_open_disclosure_adds_rows_below_and_closes_back_up() {
+        let mut doc = dom::parse("<p>up</p><details><summary>a</summary><p>Body</p></details>");
+        let closed = layout(&doc, 40, 4, true);
+        doc.disclosures[0].open = true;
+        let open = layout(&doc, 40, 4, true);
+        assert_eq!(rows(&closed), ["up", "", "  + a"]);
+        assert_eq!(rows(&open), ["up", "", "  - a", "", "  Body"], "its content goes in below");
+        doc.disclosures[0].open = false;
+        assert_eq!(rows(&layout(&doc, 40, 4, true)), ["up", "", "  + a"], "and is taken away again");
+        // A block that is not shown keeps its entry in the row table: anchors and
+        // jumps are indexed by block, and hiding must not shift them.
+        assert_eq!(layout(&doc, 40, 4, true).block_rows.len(), doc.blocks.len());
+    }
+
+    #[test]
+    fn a_disclosure_line_wraps_under_its_own_marker() {
+        let laid = layout(&dom::parse("<details><summary>one two three</summary>x</details>"), 12, 4, true);
+        assert_eq!(rows(&laid), ["  + one two", "    three"]);
+    }
+
+    #[test]
+    fn a_spanning_cell_takes_the_room_of_the_columns_it_covers() {
+        let doc = dom::parse("<table><tr><td colspan=2>wide</td></tr><tr><td>a</td><td>b</td></tr></table>");
+        let laid = layout(&doc, 40, 4, true);
+        // The cell runs over the column line it covers, and the rules above and
+        // below it break only where a column line really meets them.
+        assert_eq!(rows(&laid), ["┌────────┐", "│ wide   │", "├────────┤", "│ a  │ b │", "└────┴───┘"]);
+    }
+
+    #[test]
+    fn a_spanning_cell_widens_the_columns_it_sits_on() {
+        let doc = dom::parse(
+            "<table><tr><td colspan=2>one two three four</td></tr><tr><td>aaa</td><td>bbb</td></tr></table>",
+        );
+        let laid = layout(&doc, 20, 4, true);
+        assert_eq!(
+            rows(&laid),
+            [
+                "┌──────────────────┐",
+                "│ one two three    │",
+                "│ four             │",
+                "├──────────────────┤",
+                "│ aaa     │ bbb    │",
+                "└─────────┴────────┘"
+            ]
+        );
+        let width = laid.rows[0].width;
+        assert!(laid.rows.iter().all(|r| r.width == width), "the grid stays a rectangle");
+    }
+
+    #[test]
+    fn a_spanning_cell_in_the_last_row_leaves_the_rule_unbroken() {
+        let doc = dom::parse(
+            "<table><tr><td>one</td><td>two</td></tr><tr><td colspan=2>a spanning tail</td></tr></table>",
+        );
+        let laid = layout(&doc, 30, 4, true);
+        assert_eq!(
+            rows(&laid),
+            [
+                "┌─────────┬─────────┐",
+                "│ one     │ two     │",
+                "├───────────────────┤",
+                "│ a spanning tail   │",
+                "└───────────────────┘"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_image_label_remembers_which_image_it_stands_for() {
+        let doc =
+            dom::parse("<p>see <img src=\"/p/x.png\" alt=\"x\"> then <img src=\"/p/y.png\" alt=\"y\"></p>");
+        let laid = layout(&doc, 40, 4, true);
+        let row = laid
+            .rows
+            .iter()
+            .position(|r| r.runs.iter().any(|run| run.media.is_some()))
+            .expect("a label on a row");
+        let mut indices: Vec<usize> = laid.rows[row].runs.iter().filter_map(|run| run.media).collect();
+        indices.dedup();
+        assert_eq!(indices, vec![0, 1], "each label points at its own image, in reading order");
+        assert_eq!(laid.media_at(row, 4), Some(0), "the first word of a label");
+        assert_eq!(laid.media_at(row, 11), Some(0), "the middle of its last word");
+        assert_eq!(laid.media_at(row, 12), None, "the space after it belongs to the sentence");
+        assert_eq!(laid.media_at(row, 0), None, "and so do the words before it");
+        assert_eq!(laid.media_at(row + 1, 0), None, "nor is the next row");
+    }
+
+    #[test]
+    fn an_image_inside_a_cell_is_still_an_image() {
+        let doc =
+            dom::parse("<table><tr><td><img src=\"/p/i.png\" alt=\"i\"></td><td>words</td></tr></table>");
+        let laid = layout(&doc, 30, 4, true);
+        let where_ = laid
+            .rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, r)| r.runs.iter().find(|run| run.media.is_some()).map(|run| (row, run.start)))
+            .expect("the label survives the grid");
+        assert_eq!(laid.media_at(where_.0, where_.1), Some(0));
     }
 }

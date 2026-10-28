@@ -9,6 +9,7 @@ HTTP server on 127.0.0.1 serves one page.
 """
 from __future__ import annotations
 
+import base64
 import fcntl
 import os
 import signal
@@ -43,17 +44,37 @@ PAGE = b"""<!doctype html>
 SECOND = (
     b"<html><head><title>Second</title></head><body>"
     b"<p>second page body</p>"
-    b'<p>search: <input name="q" value="typed-in"></p>'
+    b'<form action="/found"><p>search: <input name="q" value="typed-in"></p></form>'
+    b"</body></html>"
+)
+# A page that opens with a picture: w3b cannot show it, so it labels it, and `y`
+# on that label copies where the picture was written to come from. The label is
+# the very first thing on the page, so the cursor - which starts at the top left
+# of a new page - is already standing on it.
+MEDIA = (
+    b"<html><head><title>Media</title></head><body>"
+    b'<p><img src="/img/logo.png" alt="logo"></p>'
+    b"<p>MEDIA-BELOW</p>"
     b"</body></html>"
 )
 
-LAST = {"path": "/"}
+LAST = {"path": "/", "found": ""}
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         LAST["path"] = self.path
-        body = SECOND if self.path.startswith("/second") else PAGE
+        if self.path.startswith("/found"):
+            LAST["found"] = self.path
+            # What a GET form submission asks for is shown back, so the smoke test
+            # can check the query that arrived.
+            body = b"<html><head><title>Found</title></head><body><p>FOUND " + self.path.encode() + b"</p></body></html>"
+        elif self.path.startswith("/second"):
+            body = SECOND
+        elif self.path.startswith("/media"):
+            body = MEDIA
+        else:
+            body = PAGE
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -79,6 +100,13 @@ def main() -> int:
         binary = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), binary)
     server, port = serve()
     url = f"http://127.0.0.1:{port}/"
+    media_url = f"http://127.0.0.1:{port}/media"
+    # What yanking the first line of the media page must produce: the address the
+    # image was written with, finished off against the page's own url, both as the
+    # note on screen and as the OSC 52 request sent to the terminal.
+    image = f"http://127.0.0.1:{port}/img/logo.png"
+    YANKED = f"yanked: {image}".encode()
+    CLIPBOARD = b"\x1b]52;c;" + base64.b64encode(image.encode()) + b"\x1b\\"
 
     pid, fd = pty.fork()
     if pid == 0:  # child
@@ -129,11 +157,26 @@ def main() -> int:
         # as the tail of the field: the letter, then the closing bracket.
         elif stage == 2 and b"X ]" in plain:
             stage = 3
-            # Escape leaves the field (q there would only type), then quit.
-            os.write(fd, b"\x1b")
+            # Enter in a field is its form's submit button: a GET form with an
+            # action is gone to, with the typed value in the query.
+            os.write(fd, b"\r")
+        elif stage == 3 and b"FOUND /found?q=typed-inX" in plain:
+            stage = 4
+            # A page whose first line is a picture, opened by typing its url: the
+            # cursor starts on the picture's label, and `y` copies the address.
+            os.write(fd, b"o")
             time.sleep(0.3)
-            quit_sent = True
+            for char in media_url:
+                os.write(fd, char.encode())
+                time.sleep(0.02)
+            os.write(fd, b"\r")
+        elif stage == 4 and b"MEDIA-BELOW" in plain:
+            stage = 5
+            os.write(fd, b"y")
+        elif stage == 5 and YANKED in plain:
+            stage = 6
             os.write(fd, b"q")
+            quit_sent = True
         if quit_sent:
             done, _ = os.waitpid(pid, os.WNOHANG)
             if done:
@@ -234,8 +277,18 @@ def main() -> int:
     grid = plain.decode("utf-8", "replace").replace("\ufffd", "")
     if "\u250c" not in grid and "\u2502" not in grid:
         problems.append("no box-drawing table border in the output")
-    if stage < 3:
-        problems.append(f"the field was never typed into (stages reached: {stage})")
+    if stage < 4:
+        problems.append(f"the GET form was never submitted (stages reached: {stage})")
+    if LAST["found"] != "/found?q=typed-inX":
+        problems.append(f"the form submission did not arrive as a query (last request: {LAST['found']})")
+    # `y` on the picture's label: the address, resolved against the page, both on
+    # the status line and in the OSC 52 clipboard request the terminal was sent.
+    if YANKED not in plain:
+        problems.append(f"yanking the image label never showed {YANKED!r}")
+    if CLIPBOARD not in raw:
+        problems.append("no OSC 52 clipboard request carrying the image address was written")
+    if stage < 6:
+        problems.append(f"the image label was never yanked (stages reached: {stage})")
     if LAST["path"] == "/":
         problems.append("Enter on a link never issued a request")
     if stuck:
@@ -253,7 +306,8 @@ def main() -> int:
         print("--- rendered text (ANSI stripped) ---")
         print(plain.decode("utf-8", "replace")[-2000:])
         return 1
-    print("PTY SMOKE OK: alt screen entered and restored, page rendered, link followed, quit clean")
+    print("PTY SMOKE OK: alt screen entered and restored, page rendered, link followed, "
+          "form submitted, image address yanked, quit clean")
     return 0
 
 

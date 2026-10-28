@@ -3,22 +3,22 @@ source: tests/render_tui.rs
 expression: screen
 ---
  Design notes
-
  ┌ w3b ───────────────────────────────────────────────────┐
  │w3b keys  (i or ? toggles this)                         │
  │  j / k          down, up        gg / G      top, bottom│
  │  h / l          left, right     0 ^ $       line edges │
  │  Ctrl-d / Ctrl-u  half page     PgDn/PgUp   full page  │
- │  Enter          follow or edit  r           reload     │
- │  Tab            next link       Shift-Tab   prev. link │
+ │  Enter          follow/edit/open  r         reload     │
+ │  Tab            next target     Shift-Tab   previous   │
  │  o or :         open url        /           search     │
  │  n / N          next/prev hit   Esc         cancel     │
  │  [ or Backspace back            ]           forward    │
- │  y              link target     w           toggle wrap│
+ │  y              link/media      w           toggle wrap│
  │  g then ...     go-to menu                             │
- │  in a field     typing edits, Esc or Enter is done     │
+ │  in a field     typing edits it, Esc leaves it         │
+ │  Enter there    sends the form, if it asks for a GET   │
+ │  on a + or -    Enter shows or hides the lines under it│
  │  q or Ctrl-c    quit            i or ?      this help  │
  └────────────────────────────────────────────────────────┘
- weird spacing here
 
  200 OK  https://test.local/home — Design notes… 42 ms    0%

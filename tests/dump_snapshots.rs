@@ -32,6 +32,15 @@ fn table_grid_with_headers_links_and_wrapping() {
 }
 
 #[test]
+fn table_cells_that_span_columns() {
+    let html = "<table><tr><th colspan=3>Report</th></tr>\
+        <tr><td>one</td><td>two</td><td>three</td></tr>\
+        <tr><td colspan=2>the first two</td><td align=right>last</td></tr>\
+        <tr><td>a</td><td colspan=2>the rest of the row</td></tr></table>";
+    insta::assert_snapshot!("table_colspan", show(html, 40));
+}
+
+#[test]
 fn nested_tables_and_caption() {
     let html = "<table><caption>Sizes</caption><tr><td>small</td><td><table><tr><td>inner</td></tr></table></td></tr></table>";
     insta::assert_snapshot!("table_caption", show(html, 40));
@@ -129,6 +138,28 @@ fn css_hides_a_table_column() {
 fn an_inline_style_attribute_hides_without_a_sheet() {
     assert_eq!(render_html("<p style=\"display:none\">gone</p><p>here</p>", 20), "here\n");
     assert_eq!(render_html("<p style=\"visibility:hidden\">gone</p><p>here</p>", 20), "here\n");
+}
+
+#[test]
+fn empty_lists_and_items_leave_no_trace() {
+    let html = "<p>a</p><ul></ul><ul><li></li><li> \n </li></ul><ol><li></li></ol><p>b</p>";
+    assert_eq!(render_html(html, 20), "a\n\nb\n", "no line, no blank line, no marker");
+    assert_eq!(render_html("<ul><li>keep</li><li></li></ul>", 20), "\u{2022} keep\n");
+}
+
+#[test]
+fn a_disclosure_shows_its_summary_and_opens_below_it() {
+    let closed =
+        "<p>up</p><details><summary>Anything</summary><p>Body</p><ul><li>x</li></ul></details><p>down</p>";
+    insta::assert_snapshot!("disclosure_closed", show(closed, 30));
+    insta::assert_snapshot!("disclosure_open", show(&closed.replace("<details>", "<details open>"), 30));
+}
+
+#[test]
+fn media_that_cannot_be_played_is_labelled_in_its_place() {
+    let html = "<p>the film: <video src=\"/talks/talk.mp4\" title=\"the talk\"></video> and \
+        <audio src=\"/radio/jingle.mp3\"></audio> over the intro</p>";
+    insta::assert_snapshot!("media_labels", show(html, 40));
 }
 
 #[test]

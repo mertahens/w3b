@@ -121,9 +121,14 @@ impl App {
         };
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc | KeyCode::Enter => {
+            KeyCode::Esc => {
                 self.leave_field();
                 self.message = None;
+            }
+            KeyCode::Enter => {
+                // Enter is the submit button of the form this field belongs to, so
+                // a GET form with an action is gone to with what was typed.
+                self.submit_form(index);
             }
             KeyCode::Backspace => {
                 let mut value = self.field_value(index);
@@ -194,9 +199,10 @@ impl App {
 
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Action {
         match ev.kind {
-            // One notch moves one line: the wheel is for reading, not for jumping.
-            MouseEventKind::ScrollDown => self.down(1),
-            MouseEventKind::ScrollUp => self.up(1),
+            // One notch moves one line, and moves only the page: the cursor and
+            // its highlight keep the line you stopped on.
+            MouseEventKind::ScrollDown => self.scroll_by(1),
+            MouseEventKind::ScrollUp => self.scroll_by(-1),
             MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) => {
                 let row = self.view.scroll + ev.row as usize;
                 let col = self.view.hscroll + (ev.column as usize).saturating_sub(self.padding_x());
@@ -205,7 +211,7 @@ impl App {
                     self.view.cursor.col = col;
                     self.view.cursor.desired = col;
                     self.ensure_visible();
-                    if self.link_under_cursor().is_some() {
+                    if self.link_under_cursor().is_some() || self.disclosure_under_cursor().is_some() {
                         self.follow_cursor();
                     }
                 }

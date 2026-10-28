@@ -21,11 +21,27 @@ pub enum Follow {
     Unsupported(&'static str),
 }
 
+/// What pressing Enter in a form field does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Submit {
+    /// A GET form with an action: go here, with the form's values in the query.
+    Go(String),
+    /// The form asks for a method w3b does not send; the name is for the message.
+    Method(String),
+    /// The action is a scheme w3b does not fetch (mailto, javascript, ...).
+    Unsupported(&'static str),
+    /// Nothing to submit to: the field is not in a form, or the form has no action.
+    Nowhere,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedLink {
     pub text: String,
     pub href: String,
     pub follow: Follow,
+    /// Whether this link leaves the site it is written on, which is to say it
+    /// names a host other than the page's own.
+    pub external: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -117,16 +133,19 @@ impl Page {
             kind: BlockKind::Heading(1),
             indent: 0,
             pieces: vec![Piece { text: kind.label().to_string(), ..piece() }],
+            hidden_by: None,
         });
         doc.blocks.push(Block {
             kind: BlockKind::Paragraph,
             indent: 0,
             pieces: vec![Piece { text: url.to_string(), ..piece() }],
+            hidden_by: None,
         });
         doc.blocks.push(Block {
             kind: BlockKind::Paragraph,
             indent: 0,
             pieces: vec![Piece { text: detail.to_string(), muted: true, ..piece() }],
+            hidden_by: None,
         });
         let layout = layout::layout(&doc, opts.width.max(1), opts.tab_width, opts.wrap);
         Page {
@@ -149,11 +168,13 @@ impl Page {
             kind: BlockKind::Heading(1),
             indent: 0,
             pieces: vec![Piece { text: "Loading".into(), ..piece() }],
+            hidden_by: None,
         });
         doc.blocks.push(Block {
             kind: BlockKind::Paragraph,
             indent: 0,
             pieces: vec![Piece { text: url.to_string(), ..piece() }],
+            hidden_by: None,
         });
         let layout = layout::layout(&doc, opts.width.max(1), opts.tab_width, opts.wrap);
         Page {
@@ -176,6 +197,7 @@ impl Page {
                 kind: BlockKind::Paragraph,
                 indent: 0,
                 pieces: vec![Piece { text: notice.clone(), muted: true, ..piece() }],
+                hidden_by: None,
             });
         }
         self.layout = layout::layout(&doc, opts.width.max(1), opts.tab_width, opts.wrap);
@@ -214,8 +236,75 @@ impl Page {
         self.relayout(opts);
     }
 
+    /// Where the form a field belongs to goes, and what pressing Enter there
+    /// means. Only a GET with an action is sent, exactly as a browser submits one:
+    /// every named field of that form joins the action as a query string.
+    pub fn submit_target(&self, field: usize) -> Submit {
+        let Some(field) = self.doc.fields.get(field) else { return Submit::Nowhere };
+        let Some(index) = field.form else { return Submit::Nowhere };
+        let Some(form) = self.doc.forms.get(index) else { return Submit::Nowhere };
+        let action = form.action.trim();
+        if action.is_empty() {
+            return Submit::Nowhere;
+        }
+        if form.method != "get" {
+            return Submit::Method(form.method.clone());
+        }
+        let base = match Url::parse(&self.url) {
+            Ok(url) => url,
+            Err(_) => return Submit::Nowhere,
+        };
+        let Ok(mut url) = base.join(action) else { return Submit::Nowhere };
+        // A form that aims at a piece of the page is not a new page to fetch.
+        url.set_fragment(None);
+        {
+            let mut query = url.query_pairs_mut();
+            for f in self.doc.fields.iter().filter(|f| f.form == Some(index)) {
+                if !f.name.is_empty() {
+                    query.append_pair(&f.name, &f.value);
+                }
+            }
+        }
+        match follow_url(url) {
+            Follow::Url(target) => Submit::Go(target),
+            Follow::Unsupported(why) => Submit::Unsupported(why),
+            Follow::Anchor => Submit::Nowhere,
+        }
+    }
+
+    /// What a `<details>` summary says, for the message a toggle reports.
+    pub fn disclosure_label(&self, index: usize) -> Option<&str> {
+        self.doc.disclosures.get(index).map(|d| d.label.as_str())
+    }
+
+    /// Open or close a `<details>` disclosure and re-flow the page. The content of
+    /// a closed one is part of the document all along - it is only kept off the
+    /// rows - so toggling re-lays out and never re-fetches.
+    pub fn toggle_disclosure(&mut self, index: usize, opts: RenderOptions) -> Option<bool> {
+        let d = self.doc.disclosures.get_mut(index)?;
+        d.open = !d.open;
+        let open = d.open;
+        self.relayout(opts);
+        Some(open)
+    }
+
     pub fn link_at(&self, row: usize, col: usize) -> Option<usize> {
         self.layout.link_at(row, col)
+    }
+
+    /// Where an image or media label came from, resolved against this page's URL
+    /// so the address stands on its own outside the page. `None` when the tag
+    /// does not name a source; a `data:` address comes back as written, however
+    /// long it is.
+    pub fn media_target(&self, index: usize) -> Option<String> {
+        let src = self.doc.media.get(index)?.src.as_str();
+        if src.is_empty() {
+            return None;
+        }
+        match Url::parse(&self.url).ok().and_then(|base| base.join(src).ok()) {
+            Some(resolved) => Some(resolved.as_str().to_string()),
+            None => Some(src.to_string()),
+        }
     }
 
     pub fn row_count(&self) -> usize {
@@ -288,7 +377,8 @@ fn piece() -> Piece {
         code: false,
         muted: false,
         field: None,
-        image: false,
+        disclosure: None,
+        media: None,
         hard_break: false,
     }
 }
@@ -296,7 +386,7 @@ fn piece() -> Piece {
 fn plain_text_doc(text: &str) -> Doc {
     let mut doc = Doc::default();
     for line in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-        let mut block = Block { kind: BlockKind::Pre, indent: 0, pieces: Vec::new() };
+        let mut block = Block { kind: BlockKind::Pre, indent: 0, pieces: Vec::new(), hidden_by: None };
         if !line.is_empty() {
             block.pieces.push(Piece { text: line.to_string(), ..piece() });
         }
@@ -308,32 +398,42 @@ fn plain_text_doc(text: &str) -> Doc {
 /// Resolve `href` attributes against the final URL of the response.
 pub fn resolve_links(base_url: &str, links: &[Link]) -> Vec<ResolvedLink> {
     let base = Url::parse(base_url).ok();
+    let here = base.as_ref().and_then(|b| b.host_str()).map(str::to_string);
     links
         .iter()
         .map(|link| {
             let href = link.href.trim();
+            let mut external = false;
             let follow = match base.as_ref().and_then(|b| b.join(href).ok()) {
                 None => Follow::Unsupported("url"),
                 Some(resolved) => {
                     if href.starts_with('#') {
                         Follow::Anchor
                     } else {
-                        match resolved.scheme() {
-                            "http" | "https" => Follow::Url(resolved.into()),
-                            "mailto" => Follow::Unsupported("mailto"),
-                            "tel" => Follow::Unsupported("tel"),
-                            "javascript" => Follow::Unsupported("javascript"),
-                            "data" => Follow::Unsupported("data"),
-                            "ftp" => Follow::Unsupported("ftp"),
-                            "file" => Follow::Unsupported("file"),
-                            _ => Follow::Unsupported("unknown scheme"),
-                        }
+                        // A link that names some other machine leaves the site,
+                        // and that is worth saying out loud.
+                        external = resolved.host_str().is_some_and(|host| Some(host) != here.as_deref());
+                        follow_url(resolved)
                     }
                 }
             };
-            ResolvedLink { text: link.text.trim().to_string(), href: href.to_string(), follow }
+            ResolvedLink { text: link.text.trim().to_string(), href: href.to_string(), follow, external }
         })
         .collect()
+}
+
+/// What w3b can do with a URL of its own: fetch `http`/`https`, report the rest.
+fn follow_url(resolved: Url) -> Follow {
+    match resolved.scheme() {
+        "http" | "https" => Follow::Url(resolved.into()),
+        "mailto" => Follow::Unsupported("mailto"),
+        "tel" => Follow::Unsupported("tel"),
+        "javascript" => Follow::Unsupported("javascript"),
+        "data" => Follow::Unsupported("data"),
+        "ftp" => Follow::Unsupported("ftp"),
+        "file" => Follow::Unsupported("file"),
+        _ => Follow::Unsupported("unknown scheme"),
+    }
 }
 
 /// Fallback title: last path segment of the URL, or its host.
@@ -410,5 +510,91 @@ mod tests {
         let mut page = page("<p>hello</p>");
         page.set_field(7, "x", opts(40));
         assert_eq!(row(&page, 0), "hello");
+    }
+
+    #[test]
+    fn enter_in_a_field_sends_its_form_as_a_query() {
+        let mut page = page("<form action=/search><input name=q value=ann><input name=sort></form>");
+        page.set_field(0, "one two&three", opts(40));
+        assert_eq!(
+            page.submit_target(0),
+            Submit::Go("https://test.local/search?q=one+two%26three&sort=".to_string()),
+            "every named field of the form goes into the query"
+        );
+    }
+
+    #[test]
+    fn a_field_that_was_never_named_is_not_sent() {
+        let named = page("<form action=/s><input value=hidden><input name=q value=ann></form>");
+        assert_eq!(named.submit_target(1), Submit::Go("https://test.local/s?q=ann".to_string()));
+        // What a browser does with a GET form that carries nothing: the action, and
+        // a query that is empty.
+        let empty = page("<form action=/s><input value=hidden></form>");
+        assert_eq!(empty.submit_target(0), Submit::Go("https://test.local/s?".to_string()));
+    }
+
+    #[test]
+    fn an_action_that_already_asks_for_something_keeps_it() {
+        let part = page("<form action=\"/search?fixed=1#top\"><input name=q value=ann></form>");
+        assert_eq!(part.submit_target(0), Submit::Go("https://test.local/search?fixed=1&q=ann".to_string()));
+        let far = page("<form action=\"https://other.example/x\"><input name=q value=ann></form>");
+        assert_eq!(far.submit_target(0), Submit::Go("https://other.example/x?q=ann".to_string()));
+    }
+
+    #[test]
+    fn only_a_get_form_with_an_action_is_sent() {
+        let page = page(
+            "<form method=POST action=/send><input name=p></form>\
+                         <form><input name=n></form>\
+                         <form action=\"mailto:someone@example.com\"><input name=m></form>\
+                         <p><input name=s></p>",
+        );
+        assert_eq!(page.submit_target(0), Submit::Method("post".to_string()));
+        assert_eq!(page.submit_target(1), Submit::Nowhere, "no action to send it to");
+        assert_eq!(page.submit_target(2), Submit::Unsupported("mailto"));
+        assert_eq!(page.submit_target(3), Submit::Nowhere, "a field outside any form");
+    }
+
+    #[test]
+    fn a_link_that_names_another_host_leaves_the_site() {
+        let doc = page(
+            "<a href=\"/same\">same</a> <a href=next.html>next</a> \
+             <a href=\"https://elsewhere.example/x\">elsewhere</a> \
+             <a href=\"HTTP://ELSEWHERE.example/y\">upper</a> \
+             <a href=\"http://test.local:8080/port\">port</a> \
+             <a href=\"#part\">part</a> <a href=\"mailto:a@b.c\">mail</a> \
+             <a href=\"http://\">broken</a>",
+        );
+        let flags: Vec<bool> = doc.links.iter().map(|link| link.external).collect();
+        assert_eq!(
+            flags,
+            vec![false, false, true, true, false, false, false, false],
+            "the host decides, however it is spelled; a port, an anchor, a mail address \
+             and a broken url all stay on this page's name"
+        );
+    }
+
+    #[test]
+    fn an_image_label_says_where_the_image_is() {
+        let here = page(
+            "<p><img src=\"logo.png\" alt=\"logo\"> <img src=\"../up.png\" alt=\"up\"> \
+             <img src=\"https://cdn.example/x/big.png\" alt=\"cdn\"> \
+             <img alt=\"no address\"> <img src=\"data:image/png;base64,AAAA\" alt=\"inline\"></p>",
+        );
+        let got: Vec<Option<String>> = (0..here.doc.media.len()).map(|i| here.media_target(i)).collect();
+        assert_eq!(
+            got,
+            vec![
+                Some("https://test.local/logo.png".to_string()),
+                Some("https://test.local/up.png".to_string()),
+                Some("https://cdn.example/x/big.png".to_string()),
+                None,
+                Some("data:image/png;base64,AAAA".to_string()),
+            ],
+            "a relative address is finished off with the page's own; an image that names \
+             no address has nothing to hand over"
+        );
+        assert_eq!(here.media_target(99), None, "an index off the page is ignored");
+        assert_eq!(here.doc.media[0].label, "logo", "the words on the page are kept alongside");
     }
 }
