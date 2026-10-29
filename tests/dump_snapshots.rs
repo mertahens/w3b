@@ -1,6 +1,6 @@
 //! Layout regressions: HTML in, plain text out. Snapshots make any change in
 //! the flow/wrapping rules visible immediately.
-use w3b::dump::{render_html, render_html_css, render_json};
+use w3b::dump::{render_html, render_html_css, render_json, render_markdown};
 
 fn show(html: &str, width: usize) -> String {
     render_html(html, width)
@@ -172,4 +172,10 @@ fn a_selector_that_matches_nothing_changes_nothing() {
 fn a_json_body_is_laid_out_by_its_nesting() {
     let json = r#"{"name":"w3b","stars":100,"tags":["tui","no js"],"meta":{"made":true,"owner":null},"links":[],"note":"a value long enough that it has to wrap"}"#;
     insta::assert_snapshot!("json_body", render_json(json, 34));
+}
+
+#[test]
+fn the_markdown_fixture_is_stable() {
+    let md = std::fs::read_to_string("fixtures/markdown.md").expect("fixture");
+    insta::assert_snapshot!("markdown_46", render_markdown(&md, 46));
 }

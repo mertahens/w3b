@@ -266,9 +266,18 @@ impl App {
         self.pending_g && self.mode == Mode::Normal
     }
 
-    /// Go to the page w3b opens when started without a target.
+    /// Go to the page w3b opens when started without a target. A home address
+    /// written in the config without a scheme means the same thing it means when
+    /// typed at the prompt.
     pub fn open_home(&mut self) {
-        let url = self.config.behavior.home_url.clone();
+        let home = self.config.behavior.home_url.clone();
+        let url = match normalize_target(&home) {
+            Ok(url) => url,
+            Err(err) => {
+                self.show_message(err.to_string(), true);
+                return;
+            }
+        };
         if url == self.page.url {
             self.show_message("already on the home page", false);
         } else {

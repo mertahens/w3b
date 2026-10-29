@@ -26,6 +26,12 @@ pub fn render_html(html: &str, width: usize) -> String {
     plain_text(&crate::layout::layout(&doc, width, 4, true))
 }
 
+/// Render a markdown document at a fixed width, read the way the browser reads one.
+pub fn render_markdown(src: &str, width: usize) -> String {
+    let doc = crate::dom::parse(&crate::markdown::to_html(src));
+    plain_text(&crate::layout::layout(&doc, width, 4, true))
+}
+
 /// Render a JSON body at a fixed width, laid out the way the browser lays it out.
 pub fn render_json(json: &str, width: usize) -> String {
     let doc = crate::json::doc(json).expect("the body must be valid json to lay it out");

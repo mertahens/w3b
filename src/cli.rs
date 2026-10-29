@@ -6,7 +6,8 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "w3b", version, about = "A vim-like text mode web browser")]
 pub struct Cli {
-    /// URL, host, or search terms. Falls back to `behavior.home_url`.
+    /// URL, host or search terms; a host needs no `https://` in front. Falls back
+    /// to `behavior.home_url`.
     #[arg(value_name = "TARGET")]
     pub target: Option<String>,
 

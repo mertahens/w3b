@@ -154,6 +154,37 @@ fn the_home_url_from_the_config_is_used_when_no_target_is_given() {
 }
 
 #[test]
+fn a_target_written_without_a_scheme_is_given_one() {
+    // The command line reads a target the way the `g` prompt does: words that
+    // name a machine are an address, and a machine on a local port is served
+    // over plain http.
+    let server = TestServer::start(vec![(
+        "/plain",
+        Response::html(200, "<title>Plain</title><p>no scheme was typed</p>"),
+    )]);
+    let full = server.url("/plain");
+    let address = full.split_once("://").expect("a url with a scheme").1;
+    let out = run(&["--dump", address]);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("no scheme was typed"), "{:?}", out.stdout);
+    assert!(
+        out.stderr.contains(&format!("http://{address}")),
+        "the status line names the address that was really fetched: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn an_address_written_with_a_faltering_scheme_still_opens() {
+    // `https:/example.com` is a mistyping, not a search phrase.
+    let server = TestServer::start(vec![("/one", Response::html(200, "<p>half a slash</p>"))]);
+    let mistyped = server.url("/one").replace("://", ":/");
+    let out = run(&["--dump", &mistyped]);
+    assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
+    assert!(out.stdout.contains("half a slash"), "{:?}", out.stdout);
+}
+
+#[test]
 fn a_plain_text_url_is_dumped_as_text() {
     let server = TestServer::start(vec![("/t", Response::bytes(200, "text/plain", b"one\n  two\n"))]);
     let out = run(&["--dump", &server.url("/t")]);

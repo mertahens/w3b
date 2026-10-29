@@ -109,7 +109,27 @@ mail link and a anchor.
   its address. A server that calls JSON `application/octet-stream` is caught by
   looking at the body, and a body that does not actually parse is shown exactly as
   it arrived with `json that does not parse` on the notice line.
+* A **markdown file** is read as markdown rather than as its own source. A body
+  served as `text/markdown` is converted, and so is one the server called
+  `text/plain` or `application/octet-stream` when the address ends in `.md`,
+  `.markdown`, `.mdown` or `.mkd` - which is how a code host really serves a
+  README. Headings, lists nested to any depth, quotes, fenced and indented code,
+  pipe tables with their column alignment, rules, links in every spelling
+  (`[a](/b)`, `[a][ref]`, `[ref]`, `[ref][]`, `<https://…>`, `<someone@…>`),
+  emphasis, hard breaks and images are turned into the same HTML a page would
+  carry and handed to the same parser, so a document reads, wraps, searches,
+  highlights and links exactly as its HTML twin does - down to a table of
+  contents whose `[Install](#install)` jump works, because a heading's id is
+  made from its own words the way a static host makes them. Front matter and HTML
+  comments are dropped; HTML written inside the file is shown as the text it is,
+  because a text file is as untrusted as any page and must not invent structure.
+  A `.txt` is never promoted, so notes and logs keep showing exactly what they
+  contain. What the subset leaves out comes out as its own text: definition
+  lists, footnotes, `~~strike~~`, a bare URL with no brackets, and tables inside
+  a table.
 * `--dump URL` prints the same layout as plain text, for scripts and tests.
+  `--dump` on a markdown address prints the page, not the file, so a README can
+  be read in a pipe.
 
 ## Build
 
@@ -124,7 +144,7 @@ cargo run -- https://example.com
 ```
 w3b [TARGET] [OPTIONS]
 
-  TARGET                 url, or a search term, or nothing (behavior.home_url)
+  TARGET                 url, host, search terms, or nothing (behavior.home_url)
   -c, --config <PATH>    config file (also $W3B_CONFIG)
   -d, --dump             print the page as plain text and exit
       --width <COLS>     width for --dump (default 80)
@@ -136,6 +156,17 @@ w3b [TARGET] [OPTIONS]
 
 Exit codes: `0` for 2xx/3xx, `1` for 4xx/5xx (the error page body is still
 printed), `2` for a failed request or a bad config.
+
+A target is read the way the `o` prompt reads what is typed into it. An address
+with no scheme in front is gone to over `https://`, and over plain `http://` when
+it names a local machine (`localhost`, `127.x`, `::1`), because that is what a
+development server speaks. A scheme written with a faltering slash -
+`https:/example.com`, `http:/localhost:8080` - is understood as it was written.
+Words that name no machine are searched for, which is what `TARGET` has always
+claimed to accept. So `w3b example.com`, `w3b localhost:8080` and
+`w3b rust terminal browser` each mean what the person who typed them meant. The
+same reading applies to `behavior.home_url`, so a home address may be written in
+the config without its scheme.
 
 ## Keys
 
@@ -150,7 +181,7 @@ printed), `2` for a failed request or a bad config.
 | `Enter` | follow the link under the cursor, type into the form field under it, or open / close the `<details>` under it |
 | `g` then `g` `e` `o` `i` `u` `h` `r` | go-to menu: top, end, back (out), forward (in), enter a url, home, reload (`Esc` cancels) |
 | `Tab` `Shift-Tab` | next / previous link, form field or `<details>` summary |
-| `o` or `:` | open a url (or a search term) |
+| `o` or `:` | open a url, a bare host, or a search term |
 | `/` | search, then `n` `N` for next / previous |
 | `r` | reload |
 | `Backspace` or `[` | back in history |
@@ -352,7 +383,8 @@ come from the stylesheet, and they are taken while parsing:
   file - JSON, `text/plain`, a stylesheet - is nothing but its own text, so there the
   slab is the whole text area rather than the shape of the glyphs, and a mark on the
   text (a search hit, the cell under the cursor) is painted over the slab instead of
-  under it.
+  under it. A markdown file is the exception: it is converted into a page first, so
+  its code slabs are the shape of their own code and its prose is set like prose.
 
 Everything else in CSS — colours, sizes, positioning, `float`, `grid` — is
 ignored on purpose.
@@ -402,7 +434,8 @@ INSTA_UPDATE=always cargo test  # re-accept layout/render snapshots
 ```
 
 * Unit tests cover the config parser, colour parsing, status text, percent,
-  sanitizing, charset detection, HTML → blocks, wrapping and link placement.
+  sanitizing, charset detection, HTML → blocks, markdown → HTML, wrapping and link
+  placement.
 * `tests/browser.rs` drives the real key handling against a `FakeFetcher`.
 * `tests/http_server.rs` exercises the real ureq path against a scripted local
   server: 200/404/503, redirects, `Content-Type` charsets, `text/plain`,
@@ -426,7 +459,9 @@ terminal.
 JavaScript, CSS colours and layout (only visibility and `font-family` are
 consulted, see [CSS](#css)), frames, form methods other than GET (a form is
 sent by `Enter` in one of its fields only when it asks for a GET), cookies,
-`mailto:`/`tel:` handlers, image display, HTTPS client certificates, and tabs.
+`mailto:`/`tel:` handlers, image display, HTTPS client certificates, tabs, and
+the parts of markdown a terminal cannot show anyway - definition lists,
+footnotes, strikethrough, and HTML written inside a `.md` file.
 
 ## How it was made
 

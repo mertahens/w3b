@@ -105,6 +105,28 @@ fn gh_opens_the_home_page() {
 }
 
 #[test]
+fn a_home_address_written_without_a_scheme_is_read_as_an_address() {
+    // The config is written by hand, so `home_url = "test.local/home"` happens.
+    let mut app = fake_app(home_fetcher(), "https://test.local/second", 40, 10);
+    app.config.behavior.home_url = "test.local/home".into();
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('h'));
+    app.settle();
+    assert_eq!(app.page.url, HOME);
+}
+
+#[test]
+fn a_home_address_that_names_nothing_is_a_message_and_not_a_panic() {
+    let mut app = fake_app(home_fetcher(), HOME, 40, 10);
+    app.config.behavior.home_url = String::new();
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('h'));
+    let message = app.message.clone().expect("a message about the empty home address");
+    assert!(message.error, "{}", message.text);
+    assert_eq!(app.page.url, HOME, "the page being read is left alone");
+}
+
+#[test]
 fn an_unknown_command_after_g_says_so_and_closes_the_menu() {
     let mut app = fake_app(home_fetcher(), HOME, 40, 10);
     press(&mut app, KeyCode::Char('g'));
@@ -1249,4 +1271,80 @@ fn a_json_body_the_server_broke_is_still_shown() {
     assert!(text.contains("{\"a\":1,}"), "the bytes are shown as sent: {text}");
     let notice = app.page.notice.clone().unwrap_or_default();
     assert!(notice.contains("does not parse"), "{notice}");
+}
+
+#[test]
+fn a_markdown_body_is_a_page_and_not_a_dump_of_its_source() {
+    const DOC: &str = "https://test.local/README.md";
+    let md = "# Reader\n\nSome *words* with a [link](/next).\n\n* one\n* two\n";
+    let app =
+        fake_app(FakeFetcher::new().with_type(DOC, 200, "text/markdown; charset=utf-8", md), DOC, 40, 16);
+    let text = page_text(&app);
+    assert!(text.contains("Reader"), "{text}");
+    assert!(text.contains("Some words with a link."), "the markup is gone: {text}");
+    assert!(!text.contains('*'), "no asterisk is left on the page: {text}");
+    assert!(text.contains('•'), "the list has markers: {text}");
+    assert!(!app.page.file_view, "a converted body is a page");
+    assert!(app.page.layout.links.iter().any(|_| true), "the link is a link");
+}
+
+#[test]
+fn a_plain_text_body_at_a_dot_md_address_is_read_as_markdown() {
+    // The address a raw file is served from ends in `.md` while the server calls
+    // the body `text/plain`, which is what a code host really does.
+    const DOC: &str = "https://raw.test.local/repo/main/README.md";
+    let md = "# Reader\n\n* one\n* two\n";
+    let app = fake_app(FakeFetcher::new().with_type(DOC, 200, "text/plain; charset=utf-8", md), DOC, 40, 16);
+    let text = page_text(&app);
+    assert!(text.contains('•'), "the bullets were made: {text}");
+    assert!(!text.contains("* one"), "the source is not shown: {text}");
+    assert!(!app.page.file_view);
+}
+
+#[test]
+fn a_plain_text_file_stays_the_text_it_is() {
+    // A `.txt` is not promoted, so a file that merely mentions markdown syntax
+    // keeps showing it.
+    const DOC: &str = "https://test.local/notes.txt";
+    let md = "# Reader\n\n* one\n* two\n";
+    let app = fake_app(FakeFetcher::new().with_type(DOC, 200, "text/plain; charset=utf-8", md), DOC, 40, 16);
+    let text = page_text(&app);
+    assert!(text.contains("* one"), "the source is shown as written: {text}");
+    assert!(!text.contains('•'), "nothing was converted: {text}");
+    assert!(app.page.file_view, "a text file is its own text");
+}
+
+#[test]
+fn a_markdown_table_of_contents_jumps_to_its_heading() {
+    const DOC: &str = "https://test.local/guide.md";
+    let md = format!(
+        "# Guide\n\nStart at [tips](#tips).\n\n{}## Tips\n\ntip content\n",
+        "filler one\n\nfiller two\n\n".repeat(4)
+    );
+    let mut app = fake_app(FakeFetcher::new().with_type(DOC, 200, "text/markdown", &md), DOC, 40, 12);
+    let placement = app.page.layout.links[0];
+    app.view.cursor.row = placement.row;
+    app.view.cursor.col = placement.start;
+    let start = app.view.cursor.row;
+    press(&mut app, KeyCode::Enter);
+    assert!(app.view.cursor.row > start, "the jump goes down the page");
+    let row: String = app.page.layout.rows[app.view.cursor.row]
+        .runs
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .concat();
+    assert!(row.contains("Tips"), "landed on {row:?}");
+    assert!(!app.is_loading(), "a jump inside the page fetches nothing");
+}
+
+#[test]
+fn markdown_can_be_searched_like_any_other_text() {
+    const DOC: &str = "https://test.local/CHANGELOG.md";
+    let md = "# Notes\n\nAdded a thing.\n\nFixed another thing.\n";
+    let mut app = fake_app(FakeFetcher::new().with_type(DOC, 200, "text/markdown", md), DOC, 40, 12);
+    app.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut app, "thing");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.matches.len(), 2, "both lines are hits: {:?}", app.matches);
 }

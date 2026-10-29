@@ -6,6 +6,50 @@ Unreleased is work on top of `ceb19b9` (the monospace slab).
 
 ## Unreleased
 
+### A target may be written without its scheme
+
+- `w3b example.com` goes to the page. So does `w3b --dump example.com`. Until now
+  only the `o` prompt read a bare address; the command line demanded the whole
+  `https://` and answered `bad uri: example.com is missing scheme` - while its own
+  help said the target could be a url, a host or search terms.
+- One reading now applies everywhere an address can arrive - the command line, the
+  `o` and `:` prompts, `g h`, and `behavior.home_url` in the config. A machine
+  address is gone to over `https://`; a local one (`localhost`, `127.x`, `::1`,
+  `0.0.0.0`) over plain `http://`, because that is what a development server
+  speaks; and words that name no machine become a search, which is what
+  `w3b rust terminal browser` has always claimed to mean. An address written with
+  a halting scheme is taken as written: `https:/example.com` is https and
+  `http:/localhost:8080` is http, the latter being a bug this work found - a
+  halting scheme was always turned into https, whatever was typed at it.
+- A `home_url` of nothing at all is a message on the status line instead of a fetch
+  of nothing, and the page being read is left where it was.
+
+### A markdown address is a page
+
+- Point w3b at a README and it reads as a document: headings, nested lists, quotes,
+  fenced and indented code, pipe tables lined up as their dashes say, rules, images and
+  links in every spelling a person reaches for. A body served as `text/markdown` is
+  converted, and so is one the server called `text/plain` or `application/octet-stream`
+  when the address ends in `.md`, `.markdown`, `.mdown` or `.mkd`, because that is how a
+  code host really serves a README. A `.txt` is never promoted, so notes and logs still
+  show what they contain.
+- The file is converted into HTML and handed to the page parser, so it is the same
+  browser as HTML rather than a second renderer: wrapping, `/` search, `n`, the mark, `y`
+  on a link, table rules, the monospace slab and `[style.link]` all behave as they
+  already did, and one document written both ways paints the same rows. A unit test says
+  so by rendering the same text both roads and comparing the pages.
+- A heading is given an id made from its own words, the way a static host makes one, so a
+  table of contents at the top of a README works: `[Install](#install)` jumps to the
+  heading and the status line says `anchor #install`. A list that says where to count from
+  (`10. ten`) is now obeyed by an ordered list on any page, not only a markdown one.
+- Front matter and HTML comments go, since neither is the document. HTML written inside a
+  `.md` is shown as the text it is: a file the server calls plain text is as untrusted as
+  any page and does not get to invent structure. `--dump` on a markdown address prints the
+  page rather than the file, so a README can be read in a pipe.
+- The subset is the one a terminal can show. Definition lists, footnotes, `~~strike~~` and
+  a bare URL with no brackets come out as their own text, and they say so plainly rather
+  than being half-applied.
+
 ### Bright grey ink for the browser's own words
 
 - The help pane (`?`), the page info pane (`i`) and the `g` menu no longer carry the

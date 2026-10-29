@@ -595,7 +595,16 @@ impl Builder {
             "ul" | "ol" => self.lists.push(ListCtx {
                 depth: self.lists.len() as u16 + 1,
                 ordered: name == "ol",
-                index: 0,
+                // A list may be told where to count from. One that is not, or is
+                // told in a language no number speaks, counts from one anyway.
+                index: node
+                    .value()
+                    .as_element()
+                    .and_then(|e| e.attr("start"))
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    // The attribute counts from one, this counts from nothing.
+                    .map(|n| n.saturating_sub(1))
+                    .unwrap_or(0),
                 marker: 0,
             }),
             "li" => {

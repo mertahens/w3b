@@ -144,6 +144,16 @@ impl Page {
             Kind::Text | Kind::Css => {
                 (plain_text_doc(&charset::decode(&fetched.bytes, fetched.content_type.as_deref())), None)
             }
+            // A markdown document becomes HTML and is parsed as HTML, which is
+            // the whole trick: headings, links, tables and code slabs then reach
+            // the screen by the same road as from a `.html`, so a document that
+            // has to look like the page it came from needs no second set of
+            // rules for doing it.
+            Kind::Markdown => {
+                let src = charset::decode(&fetched.bytes, fetched.content_type.as_deref());
+                let html = crate::markdown::to_html(&src);
+                (crate::dom::parse_with_css(&html, styles), None)
+            }
             Kind::Json => {
                 let text = charset::decode(&fetched.bytes, fetched.content_type.as_deref());
                 match crate::json::doc(&text) {

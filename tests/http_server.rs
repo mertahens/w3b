@@ -202,8 +202,11 @@ fn typed_targets_become_urls_or_searches() {
     assert_eq!(normalize_target("localhost:8080").unwrap(), "http://localhost:8080/");
     assert_eq!(normalize_target("localhost/x").unwrap(), "http://localhost/x");
     assert_eq!(normalize_target("127.0.0.1:3000").unwrap(), "http://127.0.0.1:3000/");
-    // A half-typed or upper case scheme is still understood.
+    // A half-typed or upper case scheme is still understood, and a faltering
+    // `http:/` keeps the http that was typed at it.
     assert_eq!(normalize_target("https:/example.com").unwrap(), "https://example.com/");
+    assert_eq!(normalize_target("http:/example.com").unwrap(), "http://example.com/");
+    assert_eq!(normalize_target("http:/localhost:8080/x").unwrap(), "http://localhost:8080/x");
     assert_eq!(normalize_target("HTTPS://example.com/x").unwrap(), "https://example.com/x");
     // A scheme w3b cannot fetch is not an address: searching beats mangling it
     // into a url.

@@ -36,6 +36,14 @@ impl Fetched {
         let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
         match ct.as_str() {
             "text/html" | "application/xhtml+xml" => Kind::Html,
+            "text/markdown" | "text/x-markdown" | "application/markdown" | "application/x-markdown" => {
+                Kind::Markdown
+            }
+            // The hosts that hand out a markdown file as a download call it
+            // `text/plain`, so the address is what tells a README from a log
+            // file. The body is never sniffed for markup: half the net looks
+            // like a document, and a `.txt` said to be plain stays plain.
+            "text/plain" | "application/octet-stream" if ends_in_markdown(&self.url) => Kind::Markdown,
             "text/plain" => Kind::Text,
             "application/json" | "text/json" => Kind::Json,
             // `application/ld+json`, `application/geo+json`, `application/manifest+json`:
@@ -54,9 +62,23 @@ impl Fetched {
     }
 }
 
+/// Where a body's text is written in the `text/*` styles w3b can put on screen.
+/// Whether an address names a markdown file. The query and the fragment come off
+/// first: a host that serves `README.md?raw=1`, or redirects to `README.md#L10`,
+/// is still serving that file.
+fn ends_in_markdown(url: &str) -> bool {
+    let last = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.path_segments().and_then(|mut s| s.next_back().map(str::to_owned)))
+        .unwrap_or_default();
+    [".md", ".markdown", ".mdown", ".mkd"].iter().any(|ext| last.to_ascii_lowercase().ends_with(ext))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Html,
+    /// A markdown document, turned into HTML before it is parsed.
+    Markdown,
     Text,
     /// Structured data: laid out by nesting and coloured by part.
     Json,
@@ -89,9 +111,9 @@ pub fn normalize_target(input: &str) -> Result<String, Error> {
     // No scheme: an address gets `https://` in front of it (plain `http://` for
     // localhost, where that is what is actually running), anything else is a
     // search phrase.
-    let hostless = half_typed_scheme(input);
-    let candidate = match hostless {
-        Some(rest) => format!("https://{rest}"),
+    let candidate = match half_typed_scheme(input) {
+        // A scheme typed with a faltering slash is still the scheme that was meant.
+        Some((scheme, rest)) => format!("{scheme}://{rest}"),
         None if looks_like_host(input) => {
             let scheme = if is_local_authority(input) { "http" } else { "https" };
             format!("{scheme}://{input}")
@@ -128,15 +150,16 @@ fn looks_like_host(input: &str) -> bool {
     input.contains('.') || input.contains(':') || input.contains('/')
 }
 
-/// A mistyped scheme such as `https:/example.com` still means a url. Returns
-/// the part after the scheme, or `None` when there is no scheme at all.
-fn half_typed_scheme(input: &str) -> Option<&str> {
+/// A mistyped scheme such as `https:/example.com` still means a url. Returns the
+/// scheme that was meant and the part after it, or `None` when there is no scheme.
+fn half_typed_scheme(input: &str) -> Option<(&'static str, &str)> {
     let lower = input.to_ascii_lowercase();
-    for prefix in ["https:/", "https:", "http:/", "http:"] {
+    for (prefix, scheme) in [("https:/", "https"), ("https:", "https"), ("http:/", "http"), ("http:", "http")]
+    {
         if lower.starts_with(prefix) {
             let rest = input[prefix.len()..].trim_start_matches('/');
             if !rest.is_empty() {
-                return Some(rest);
+                return Some((scheme, rest));
             }
         }
     }

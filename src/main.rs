@@ -7,7 +7,7 @@ use w3b::cli::{config_path, Cli};
 use w3b::config::Config;
 use w3b::dump::plain_text;
 use w3b::error::Error;
-use w3b::net::{Fetcher, HttpFetcher};
+use w3b::net::{normalize_target, Fetcher, HttpFetcher};
 use w3b::status::StatusKind;
 use w3b::theme::Theme;
 use w3b::App;
@@ -55,6 +55,10 @@ fn real_main() -> Result<ExitCode, Error> {
     let theme = Theme::build(&config)?;
 
     let target = cli.target.clone().unwrap_or_else(|| config.behavior.home_url.clone());
+    // A target is read the same way the `g` prompt reads one: an address with no
+    // scheme in front becomes https (plain http on a local port), words that name
+    // no machine become a search.
+    let target = normalize_target(&target)?;
     let fetcher: Arc<dyn Fetcher> = Arc::new(HttpFetcher::new(&config.behavior));
 
     if cli.dump {

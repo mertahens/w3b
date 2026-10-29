@@ -14,6 +14,7 @@ pub mod error;
 pub mod json;
 pub mod keys;
 pub mod layout;
+pub mod markdown;
 pub mod net;
 pub mod page;
 pub mod render;
