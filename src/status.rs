@@ -88,6 +88,19 @@ pub fn percent(cursor_row: usize, total_rows: usize) -> u32 {
     }
 }
 
+/// A byte count the way a status line says it: `412 B`, `18.2 kB`, `1.4 MB`.
+/// The status line and the page info pane both say the size of a body this way, so
+/// the two numbers never look like two different measurements.
+pub fn human_size(n: usize) -> String {
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    if n < 1024 * 1024 {
+        return format!("{:.1} kB", n as f64 / 1024.0);
+    }
+    format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +136,15 @@ mod tests {
         assert_eq!(percent(50, 10), 100, "out of range clamps");
         assert_eq!(percent(0, 2), 0);
         assert_eq!(percent(1, 2), 100);
+    }
+
+    #[test]
+    fn a_size_is_said_the_way_a_status_line_says_it() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(412), "412 B", "bytes below a kilobyte are exact");
+        assert_eq!(human_size(1023), "1023 B", "and stay exact right up to it");
+        assert_eq!(human_size(1024), "1.0 kB", "one kilobyte turns the corner");
+        assert_eq!(human_size(18_637), "18.2 kB", "one decimal above it");
+        assert_eq!(human_size(1_468_006), "1.4 MB");
     }
 }

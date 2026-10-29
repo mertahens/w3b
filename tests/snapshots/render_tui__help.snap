@@ -2,9 +2,8 @@
 source: tests/render_tui.rs
 expression: screen
 ---
- Design notes
  ┌ w3b ───────────────────────────────────────────────────┐
- │w3b keys  (i or ? toggles this)                         │
+ │w3b keys  (? toggles this)                              │
  │  j / k          down, up        gg / G      top, bottom│
  │  h / l          left, right     0 ^ $       line edges │
  │  Ctrl-d / Ctrl-u  half page     PgDn/PgUp   full page  │
@@ -13,12 +12,13 @@ expression: screen
  │  o or :         open url        /           search     │
  │  n / N          next/prev hit   Esc         cancel     │
  │  [ or Backspace back            ]           forward    │
- │  y              link/media      w           toggle wrap│
+ │  v V drag       mark text       w           toggle wrap│
+ │  y              what is marked, else link, else page   │
  │  g then ...     go-to menu                             │
  │  in a field     typing edits it, Esc leaves it         │
  │  Enter there    sends the form, if it asks for a GET   │
  │  on a + or -    Enter shows or hides the lines under it│
- │  q or Ctrl-c    quit            i or ?      this help  │
+ │  i              page info: cost, what was left out     │
+ │  q or Ctrl-c    quit            ?           this help  │
  └────────────────────────────────────────────────────────┘
-
- 200 OK  https://test.local/home — Design notes… 42 ms    0%
+ 200 OK  https://test.local/home — Desig… 42 ms  604 B    0%

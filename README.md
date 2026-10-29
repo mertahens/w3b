@@ -17,7 +17,7 @@ mail link and a anchor.
       println!("hello");
   }
 ────────────────────────────────────────────────────────────
- 200 OK  https://example.com — Design notes - w3b  41 ms  0%
+ 200 OK  https://example.com — Design notes - w3b  41 ms  18.2 kB  0%
 ```
 
 * The **cursor** is a real cursor: it moves with `j k h l`, and the page scrolls
@@ -80,11 +80,35 @@ mail link and a anchor.
   `[style.link]`. An external link keeps its colour once you have read it, where a
   local one would take `[style.visited]`: what it says is the destination, not the
   visit.
-* The **status line** at the bottom shows `[status]  url — title  time  percent`
-  - the load time can be switched off with `show_load_time = false`. Status comes
+* The **status line** at the bottom shows `[status]  url — title  time  size  percent`
+  - the load time can be switched off with `show_load_time = false`, the size with
+  `show_size = false`. The size is the body as it arrived - `412 B`, `18.2 kB`,
+  `1.4 MB` - the same figure the `i` pane reports, so a page's weight and what it cost
+  to get are read side by side. It is absent while a fetch is in flight and for a page
+  that never arrived at all. Status comes
   from the HTTP status code (`200 OK`, `404 NOT FOUND`) or a braille spinner and
   `LOADING` while a request is in flight, and network failures show the reason
   (`ERROR DNS`, `ERROR TLS`, `ERROR TIMEOUT`, …).
+* The **page info pane** (`i`) says what the page cost: `net`, `css`, `parse`
+  and `layout` in milliseconds, how many bytes came over the wire, how many
+  stylesheets the page asked for against how many w3b actually read, and a count
+  of every kind of thing a browser would have fetched and w3b left alone -
+  images, video and audio, scripts, frames, favicons, `<svg>`/`<canvas>` and
+  friends. The tallies are taken while parsing, not guessed afterwards.
+* A **JSON body** is read as JSON rather than as bytes. `application/json`,
+  `application/ld+json` and friends are laid out one entry per line with the
+  nesting shown, and the keys, strings, numbers and `true`/`false`/`null` are
+  coloured by `[style.json_key]`, `[style.json_string]`, `[style.json_number]` and
+  `[style.json_literal]` over the monospace slab; braces and commas take
+  `[style.muted]`. A body read as a file rather than a page has no prose to set the
+  code apart from, so its slab covers the whole text area, every line, rather than
+  tracing the glyphs of each one. Each line is numbered down the left in
+  `[style.muted]`, wide enough for the last line so the body lines up, and the
+  numbers reach `--dump` too. Keys stay in the order the server sent them, the text stays
+  ordinary characters, so `/` searches a document like prose and `y` still copies
+  its address. A server that calls JSON `application/octet-stream` is caught by
+  looking at the body, and a body that does not actually parse is shown exactly as
+  it arrived with `json that does not parse` on the notice line.
 * `--dump URL` prints the same layout as plain text, for scripts and tests.
 
 ## Build
@@ -131,9 +155,11 @@ printed), `2` for a failed request or a bad config.
 | `r` | reload |
 | `Backspace` or `[` | back in history |
 | `]` | forward in history |
-| `y` | yank: the link under the cursor, or the address of the image or clip under it, or the page url when nothing is under it. A label written inside a link yanks the link. The text goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
+| `v` `V` | mark text: `v` marks from the cursor and the far end moves with the cursor keys, `w` `b` `e`, `0` `$`, `j` `k` and the page keys, `V` takes whole lines, `Esc` drops the mark. Dragging the left button marks too. The status line counts the mark (`11 selected`) and `y` takes it |
+| `y` | yank: what is marked, else the link under the cursor, else the address of the image or clip under it, else the page url. A label written inside a link yanks the link. The text goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
 | `w` | toggle line wrapping |
-| `i` or `?` | key help |
+| `?` | key help |
+| `i` | page info: the timing breakdown, the size of the page, and everything that was not fetched |
 | while typing in a field | `Backspace` erases, `Ctrl-u` clears, `Ctrl-w` deletes a word, `Enter` submits the form the field belongs to (or is just done), `Esc` is done |
 | `q`, `Ctrl-c` | quit |
 
@@ -157,8 +183,11 @@ so the cursor never moves and nothing else on the page shifts. Opening one never
 re-fetches the page: what it holds was there all along, only not shown.
 
 The mouse wheel scrolls the page one line per notch and leaves the cursor where it
-is; left-click follows the link under it, or opens the `<details>` under it; disable
-either with `mouse = false`. One notch stays one line even on a terminal that reports
+is; left-click follows the link under it, or opens the `<details>` under it; dragging
+across the text marks it, and `y` then takes what was marked. Disable the whole mouse
+with `mouse = false`. A click is a press and a release that come back to the same
+cell, which is what keeps a drag that started on a link from navigating away. One
+notch stays one line even on a terminal that reports
 it as three events - WezTerm's wheel multiplier does exactly that out of the box -
 because wheel events arriving in one burst are folded into the one step they
 describe. The cursor only moves when the page slides its line off the window, and
@@ -170,6 +199,20 @@ moves from the ink to the background, with black text — and its target is show
 in the status line as `-> url`. The cursor is not tied to the length of its line:
 `h`/`l` and `j`/`k` carry it anywhere across the width of the page, so it keeps
 its column over short lines.
+
+Marking text - by dragging, or with `v` from the cursor - paints it with
+`[style.selection]` and counts it in the status line. `y` takes it as it reads on
+screen, with the lines the mark crossed joined, and reports `yanked 11 characters`;
+a mark covering nothing says so instead of putting empty text on the clipboard. The
+end the button went down on stays where it was while the window scrolls, so the wheel
+moves the far end and not the mark, and walking the cursor past that end is not a
+special case: the two ends swap. `V` takes whole lines, `v` and `V` switch between
+the two, and `Esc` drops the mark and leaves the cursor where it stopped. While a
+mark is open the keys that would leave the page - `o`, `:`, `/`, `n`, `N`, `r`, `[`,
+`]`, `?`, `i`, `Enter` - do nothing, so a mis-hit cannot lose it; `g g` and `g e`
+still stretch it to the top or the bottom of the page. A mark belongs to the text it
+was made in, so a new page, a resize, `w`, opening a `<details>` or moving into a
+field drops it: the lines it names are no longer those lines.
 
 ## Configuration
 
@@ -202,10 +245,15 @@ image = { fg = "black", bg = "magenta", italic = true }
 linked_image = { fg = "black", underline = true }
 monospace = { fg = "#d0d0d0", bg = "#141414" }
 disclosure = { underline = true }
+json_key = { fg = "light_blue" }
+json_string = { fg = "green" }
+json_number = { fg = "yellow" }
+json_literal = { fg = "light_cyan" }
 hovered_link = { fg = "black", bg = "blue" }
 cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
-search_match = { bg = "yellow", fg = "black" }
+search_match = { bg = "gray", fg = "black" }
+selection = { bg = "light_gray", fg = "black"}
 prompt, message, url, title, position, scrollbar, border
 
 [style.status]                # the status bar itself
@@ -252,6 +300,7 @@ page_padding_x = 1
 yank_to_clipboard = true
 max_stylesheets = 4
 show_load_time = true
+show_size = true
 ```
 
 Colours accept any ratatui colour name (`red`, `dark_gray`, `light_blue`), a 256
@@ -283,7 +332,11 @@ come from the stylesheet, and they are taken while parsing:
   `textarea`). `[style.monospace]` paints a dark slab under that text with one blank
   cell of padding on each side, and stops there: the rest of a short line, the rows
   around a block and the rest of the terminal are left alone, so no empty line below a
-  block is shaded. The slab also outranks the colour set for `code`.
+  block is shaded. The slab also outranks the colour set for `code`. A body read as a
+  file - JSON, `text/plain`, a stylesheet - is nothing but its own text, so there the
+  slab is the whole text area rather than the shape of the glyphs, and a mark on the
+  text (a search hit, the cell under the cursor) is painted over the slab instead of
+  under it.
 
 Everything else in CSS — colours, sizes, positioning, `float`, `grid` — is
 ignored on purpose.

@@ -49,8 +49,13 @@ pub enum Mode {
     Open,
     Search,
     Help,
+    /// The page info pane: what the load cost, what was read, what was left alone.
+    Info,
     /// Typing into a form field. `App::editing` says which one.
     Field,
+    /// Text is being marked with `v` or `V`. The cursor is one end of the mark and
+    /// `View::visual` holds the other.
+    Visual,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,11 +78,23 @@ pub struct View {
     /// the wheel moves the window and leaves the cursor on its line.
     pub scroll: usize,
     pub hscroll: usize,
+    /// The far end of a visual selection, if one is open. The cursor is the other end,
+    /// exactly as in vim: move past the anchor and the two simply swap places.
+    pub visual: Option<Anchor>,
+}
+
+/// The far end of a visual selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    pub row: usize,
+    pub col: usize,
+    /// `V` takes whole lines, end to end, whatever column the anchor stands on.
+    pub linewise: bool,
 }
 
 impl View {
     pub fn new() -> View {
-        View { cursor: Cursor::default(), scroll: 0, hscroll: 0 }
+        View { cursor: Cursor::default(), scroll: 0, hscroll: 0, visual: None }
     }
 }
 
@@ -87,7 +104,10 @@ impl Default for View {
     }
 }
 
-type Reply = (u64, Result<Fetched, Error>);
+/// What a fetch thread sends back: which request this answers, the answer, and how
+/// long the network took, clocked in the thread itself because that is the only
+/// place that knows.
+type Reply = (u64, Result<Fetched, Error>, u64);
 
 pub struct App {
     pub config: Config,
@@ -118,6 +138,10 @@ pub struct App {
     pub editing: Option<usize>,
     /// Frame of the loading spinner, advanced while a fetch is in flight.
     pub spin: usize,
+    /// Where the left mouse button went down, as a layout position. The button is
+    /// up again before anything can be learned from a press: the same cell on the
+    /// way back up is a click, a different one is a drag.
+    pub mouse_press: Option<(usize, usize)>,
 }
 
 impl App {
@@ -168,6 +192,7 @@ impl App {
             fetch_started: None,
             editing: None,
             spin: 0,
+            mouse_press: None,
         }
     }
 
@@ -186,6 +211,16 @@ impl App {
             Some(ms) if ms < 1000 => Some(format!("{ms} ms")),
             Some(ms) => Some(format!("{:.1}s", ms as f64 / 1000.0)),
         }
+    }
+
+    /// The size of the body for the status line: `412 B`, `18.2 kB`. `None` while a
+    /// fetch is in flight (the size on screen would be the old page's) and for a page
+    /// that never came over the wire at all - an error, or one w3b wrote itself.
+    pub fn size_text(&self) -> Option<String> {
+        if self.is_loading() || self.page.bytes == 0 {
+            return None;
+        }
+        Some(status::human_size(self.page.bytes))
     }
 
     pub fn status(&self) -> Status {
@@ -233,6 +268,9 @@ impl App {
     }
 
     pub fn enter_input_mode(&mut self, mode: Mode, initial: String) {
+        // A prompt is a different job: the mark is left behind rather than kept
+        // under a screen the reader cannot see it on.
+        self.leave_visual();
         self.mode = mode;
         self.input = initial;
         self.input_pos = self.input.chars().count();
@@ -250,8 +288,11 @@ impl App {
         let fetcher = Arc::clone(&self.fetcher);
         let request_url = url.to_string();
         std::thread::spawn(move || {
+            let started = Instant::now();
             let reply = fetcher.fetch(&request_url);
-            let _ = tx.send((seq, reply));
+            // The thread is the only place that knows where the network time went,
+            // so it clocked the fetch and sends the number back with the answer.
+            let _ = tx.send((seq, reply, started.elapsed().as_millis() as u64));
         });
         self.rx = Some(rx);
         self.loading_url = Some(url.to_string());
@@ -264,7 +305,7 @@ impl App {
     pub fn poll(&mut self) -> bool {
         let Some(rx) = self.rx.take() else { return false };
         match rx.try_recv() {
-            Ok((_seq, result)) => self.apply(result),
+            Ok((_seq, result, fetch_ms)) => self.apply(result, fetch_ms),
             Err(mpsc::TryRecvError::Empty) => {
                 self.rx = Some(rx);
                 false
@@ -290,11 +331,13 @@ impl App {
         self.fetch_started = Some(Instant::now());
         self.loading_url = Some(url.to_string());
         let target = url.to_string();
+        let started = Instant::now();
         let result = self.fetcher.fetch(&target);
-        self.apply(result);
+        let fetch_ms = started.elapsed().as_millis() as u64;
+        self.apply(result, fetch_ms);
     }
 
-    fn apply(&mut self, result: Result<Fetched, Error>) -> bool {
+    fn apply(&mut self, result: Result<Fetched, Error>, fetch_ms: u64) -> bool {
         let requested = self.loading_url.take().unwrap_or_default();
         match result {
             Ok(fetched) => {
@@ -307,7 +350,12 @@ impl App {
                 self.visited.insert(fetched.url.clone());
                 self.record_history();
                 self.page.load_ms = self.fetch_started.take().map(|t| t.elapsed().as_millis() as u64);
+                if let Some(timings) = self.page.timings.as_mut() {
+                    timings.fetch = fetch_ms;
+                    timings.total = self.page.load_ms.unwrap_or(timings.total);
+                }
                 self.view = View::new();
+                self.back_to_page();
                 self.rebuild_matches();
                 true
             }
@@ -388,6 +436,7 @@ impl App {
         if width == self.viewport.width && height == self.viewport.height {
             return;
         }
+        self.leave_visual();
         self.viewport = Viewport { width: width.max(1), height: height.max(1) };
         self.page.relayout(self.render_options());
         self.rebuild_matches();
@@ -395,6 +444,7 @@ impl App {
     }
 
     pub fn toggle_wrap(&mut self) {
+        self.leave_visual();
         self.config.behavior.wrap = !self.config.behavior.wrap;
         self.page.relayout(self.render_options());
         self.rebuild_matches();
@@ -598,6 +648,29 @@ impl App {
         self.ensure_visible();
     }
 
+    /// Move the cursor to a layout position: what a click, a drag and a jump share.
+    pub fn move_cursor_to(&mut self, at: (usize, usize)) {
+        self.view.cursor.row = at.0;
+        self.view.cursor.col = at.1;
+        self.view.cursor.desired = at.1;
+        self.ensure_visible();
+    }
+
+    /// The layout row and column a mouse position falls on, or `None` when it does
+    /// not fall on page text at all: the status line, the prompt row, or past the
+    /// last row of the page. Columns are free, so any column is a cell.
+    pub fn cell_at(&self, column: usize, row: usize) -> Option<(usize, usize)> {
+        // A prompt takes the row that would have been the last line of the page.
+        let prompt_rows = usize::from(matches!(self.mode, Mode::Open | Mode::Search));
+        let shown = self.page_height().saturating_sub(prompt_rows);
+        if row >= shown || self.view.scroll + row >= self.page.row_count() {
+            return None;
+        }
+        let row = self.view.scroll + row;
+        let col = self.view.hscroll + column.saturating_sub(self.padding_x());
+        Some((row, col.min(self.max_col())))
+    }
+
     fn set_row(&mut self, row: usize) {
         self.view.cursor.row = row;
         // The wanted column survives a move onto a shorter line: the cursor keeps
@@ -684,6 +757,7 @@ impl App {
             _ => "Enter or Esc to finish",
         };
         self.editing = Some(index);
+        self.leave_visual();
         self.mode = Mode::Field;
         self.place_cursor_in_field(index);
         self.show_message(format!("typing in {name} ({finished})"), false);
@@ -727,6 +801,7 @@ impl App {
 
     /// Replace a field's value and re-flow the page, keeping the caret on it.
     pub fn commit_field(&mut self, index: usize, value: &str) {
+        self.leave_visual();
         let opts = self.render_options();
         self.page.set_field(index, value, opts);
         self.place_cursor_in_field(index);
@@ -803,6 +878,7 @@ impl App {
     /// summary, and away again when it is closed. The summary keeps its own row,
     /// so the cursor does not move.
     pub fn toggle_disclosure(&mut self, index: usize) {
+        self.leave_visual();
         let opts = self.render_options();
         let Some(open) = self.page.toggle_disclosure(index, opts) else { return };
         let label = self
@@ -879,6 +955,142 @@ impl App {
                 Some(url)
             }
         }
+    }
+
+    /// `v` and `V`: start marking text, or stop. The anchor is where the cursor stands
+    /// when marking starts and the cursor is the other end; the same key again stops
+    /// marking, the other one switches between characters and whole lines, so the pair
+    /// behaves as it does in vim.
+    pub fn toggle_visual(&mut self, linewise: bool) {
+        match self.view.visual {
+            None => {
+                let here = self.view.cursor;
+                self.view.visual = Some(Anchor { row: here.row, col: here.col, linewise });
+                self.mode = Mode::Visual;
+            }
+            Some(anchor) if anchor.linewise != linewise => {
+                self.view.visual = Some(Anchor { linewise, ..anchor });
+                self.mode = Mode::Visual;
+            }
+            Some(_) => self.leave_visual(),
+        }
+    }
+
+    /// Stop marking. A selection is a position on the page, so it does not outlive the
+    /// page it was made on, nor a re-layout that moves the text to other columns.
+    pub fn leave_visual(&mut self) {
+        self.view.visual = None;
+        if self.mode == Mode::Visual {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// The left mouse button going down on page text: the cell comes under the
+    /// cursor, and the press is remembered. Whether this was a click or the start of
+    /// a drag is only known when the button comes back up.
+    pub fn press_mouse(&mut self, at: (usize, usize)) {
+        self.mouse_press = Some(at);
+        self.move_cursor_to(at);
+    }
+
+    /// A drag: the press is one end of a character-wise mark and the cell under the
+    /// pointer is the other. Dragging takes over any mark that was open, the way a
+    /// fresh drag does everywhere else.
+    pub fn drag_mouse(&mut self, at: (usize, usize)) {
+        let Some(press) = self.mouse_press else { return };
+        self.leave_field();
+        self.view.visual = Some(Anchor { row: press.0, col: press.1, linewise: false });
+        self.mode = Mode::Visual;
+        self.move_cursor_to(at);
+    }
+
+    /// The left button coming up. Back in the cell it went down in it is a click:
+    /// the mark is dropped and what the cursor stands on is acted on. Anywhere else
+    /// the press and the release are a drag, and what it covers stays marked for `y`.
+    pub fn release_mouse(&mut self, at: Option<(usize, usize)>) {
+        let Some(press) = self.mouse_press.take() else { return };
+        if Some(press) != at {
+            return;
+        }
+        self.leave_field();
+        self.leave_visual();
+        if self.link_under_cursor().is_some() || self.disclosure_under_cursor().is_some() {
+            self.follow_cursor();
+        }
+    }
+
+    /// Coming back from a prompt or a search: back to marking if text is marked.
+    pub fn back_to_page(&mut self) {
+        self.mode = if self.view.visual.is_some() { Mode::Visual } else { Mode::Normal };
+    }
+
+    /// The two ends of the selection in reading order: first row and column, then last.
+    pub fn visual_ends(&self) -> Option<(usize, usize, usize, usize)> {
+        let anchor = self.view.visual?;
+        let here = (self.view.cursor.row, self.view.cursor.col);
+        let from = (anchor.row, anchor.col);
+        let (first, last) = if from <= here { (from, here) } else { (here, from) };
+        Some((first.0, first.1, last.0, last.1))
+    }
+
+    /// Which display columns of `row` the selection covers, `to` exclusive: the cells
+    /// the screen marks and the text `selected_text` takes.
+    pub fn visual_span(&self, row: usize) -> Option<(usize, usize)> {
+        let (r1, c1, r2, c2) = self.visual_ends()?;
+        if row < r1 || row > r2 {
+            return None;
+        }
+        if self.view.visual.is_some_and(|a| a.linewise) {
+            return Some((0, self.content_width()));
+        }
+        let from = if row == r1 { c1 } else { 0 };
+        let to = if row == r2 {
+            // The character the cursor stands on belongs to the selection and the one
+            // after it does not, which is what vim's inclusive range means.
+            let width = self.rows().get(row).and_then(|r| r.glyph_at(c2)).unwrap_or(1);
+            c2 + width
+        } else {
+            self.row_width(row)
+        };
+        (to > from).then_some((from, to))
+    }
+
+    /// The marked text as it stands on the screen, with the line breaks it has.
+    pub fn selected_text(&self) -> Option<String> {
+        let (r1, _, r2, _) = self.visual_ends()?;
+        let mut lines = Vec::new();
+        for row in r1..=r2 {
+            let (from, to) = self.visual_span(row).unwrap_or((0, 0));
+            lines.push(self.rows().get(row).map(|r| r.slice(from, to)).unwrap_or_default());
+        }
+        Some(lines.join("\n"))
+    }
+
+    /// `y` with a selection: copy what is marked rather than what the cursor stands on.
+    pub fn yank_selection(&mut self) -> Option<String> {
+        let text = self.selected_text()?;
+        if text.trim().is_empty() {
+            self.show_message("the selection is blank", true);
+            return None;
+        }
+        let count = self
+            .visual_ends()
+            .filter(|(r1, _, r2, _)| r1 != r2)
+            .map(|(r1, _, r2, _)| format!("{} lines", r2 - r1 + 1))
+            .unwrap_or_else(|| format!("{} characters", text.chars().count()));
+        self.show_message(format!("yanked {count}"), false);
+        Some(text)
+    }
+
+    /// The status line's note while text is marked: how much of it there is.
+    pub fn visual_status(&self) -> Option<String> {
+        let (r1, _, r2, _) = self.visual_ends()?;
+        let what = if self.view.visual.is_some_and(|a| a.linewise) {
+            (r2 - r1 + 1).to_string()
+        } else {
+            self.selected_text().map(|t| t.chars().filter(|c| *c != ' ').count()).unwrap_or(0).to_string()
+        };
+        Some(format!("{what} selected"))
     }
 
     /// Move the cursor to the next link, form field or disclosure. The cursor

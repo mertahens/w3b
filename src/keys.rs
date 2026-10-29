@@ -20,17 +20,21 @@ impl App {
         match self.mode {
             Mode::Open | Mode::Search => self.handle_input_key(key),
             Mode::Field => self.handle_field_key(key),
-            Mode::Help => {
+            Mode::Help | Mode::Info => {
                 self.mode = Mode::Normal;
                 Action::None
             }
-            Mode::Normal => self.handle_normal_key(key),
+            Mode::Normal | Mode::Visual => self.handle_normal_key(key),
         }
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let code = key.code;
+        // While text is marked the movement keys drag its far end along with the
+        // cursor; everything that is not a movement, a yank or the marking itself is
+        // something to do once the mark is gone.
+        let visual = self.mode == Mode::Visual;
         // A `g` is waiting: whatever comes next is a go-to command.
         if self.pending_g {
             self.pending_g = false;
@@ -60,23 +64,33 @@ impl App {
             KeyCode::Char('b') if ctrl => self.page_up(false),
             KeyCode::PageDown => self.page_down(false),
             KeyCode::PageUp => self.page_up(false),
-            KeyCode::Enter => self.follow_cursor(),
+            KeyCode::Enter if !visual => self.follow_cursor(),
             KeyCode::Tab => self.next_link(),
             KeyCode::BackTab => self.prev_link(),
-            KeyCode::Char('o') | KeyCode::Char(':') => self.enter_input_mode(Mode::Open, String::new()),
-            KeyCode::Char('/') => self.enter_input_mode(Mode::Search, self.query.clone()),
-            KeyCode::Char('n') => self.goto_match(true),
-            KeyCode::Char('N') => self.goto_match(false),
-            KeyCode::Char('r') => self.reload(),
-            KeyCode::Backspace | KeyCode::Char('[') => self.go_back(),
-            KeyCode::Char(']') => self.go_forward(),
-            KeyCode::Char('y') => yanked = self.yank_cursor(),
+            KeyCode::Char('o') | KeyCode::Char(':') if !visual => {
+                self.enter_input_mode(Mode::Open, String::new())
+            }
+            KeyCode::Char('/') if !visual => self.enter_input_mode(Mode::Search, self.query.clone()),
+            KeyCode::Char('n') if !visual => self.goto_match(true),
+            KeyCode::Char('N') if !visual => self.goto_match(false),
+            KeyCode::Char('r') if !visual => self.reload(),
+            KeyCode::Backspace | KeyCode::Char('[') if !visual => self.go_back(),
+            KeyCode::Char(']') if !visual => self.go_forward(),
+            // `y` takes what is marked when anything is, and what the cursor stands on
+            // - a link, an image, the page - when nothing is.
+            KeyCode::Char('y') => yanked = if visual { self.yank_selection() } else { self.yank_cursor() },
+            KeyCode::Char('v') => self.toggle_visual(false),
+            KeyCode::Char('V') => self.toggle_visual(true),
             KeyCode::Char('w') => self.toggle_wrap(),
-            KeyCode::Char('i') | KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('?') if !visual => self.mode = Mode::Help,
+            KeyCode::Char('i') if !visual => self.mode = Mode::Info,
             KeyCode::Esc => {
                 self.pending_g = false;
                 self.input.clear();
                 self.input_pos = 0;
+                if visual {
+                    self.leave_visual();
+                }
             }
             _ => {}
         }
@@ -89,8 +103,11 @@ impl App {
         }
     }
 
-    /// The second half of a `g` command. See `GOTO_MENU`.
+    /// The second half of a `g` command. See `GOTO_MENU`. While text is marked only
+    /// the two jumps within the page are offered: the rest change the page, and a
+    /// mark belongs to the one it was made on.
     fn handle_goto_key(&mut self, code: KeyCode) -> Action {
+        let page_only = self.mode == Mode::Visual;
         match code {
             KeyCode::Esc => {
                 self.message = None;
@@ -98,12 +115,12 @@ impl App {
             KeyCode::Char('g') => self.to_top(),
             KeyCode::Char('e') => self.to_bottom(),
             // Helix-style: `g o` out (back in history), `g i` in (forward).
-            KeyCode::Char('o') => self.go_back(),
-            KeyCode::Char('i') => self.go_forward(),
-            KeyCode::Char('u') => self.enter_input_mode(Mode::Open, String::new()),
-            KeyCode::Char('h') => self.open_home(),
-            KeyCode::Char('r') => self.reload(),
-            KeyCode::Char(c) => {
+            KeyCode::Char('o') if !page_only => self.go_back(),
+            KeyCode::Char('i') if !page_only => self.go_forward(),
+            KeyCode::Char('u') if !page_only => self.enter_input_mode(Mode::Open, String::new()),
+            KeyCode::Char('h') if !page_only => self.open_home(),
+            KeyCode::Char('r') if !page_only => self.reload(),
+            KeyCode::Char(c) if !page_only => {
                 self.show_message(format!("g{c}: no such command (see the menu)"), true);
             }
             _ => {}
@@ -198,23 +215,40 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, ev: MouseEvent) -> Action {
+        // The left button is the reader asking for something new, so a note left over
+        // from the last action is done with - the same as pressing a key. The wheel
+        // only moves the page and leaves the note alone.
+        if matches!(
+            ev.kind,
+            MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left)
+                | MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left)
+                | MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left)
+        ) {
+            self.clear_message();
+        }
         match ev.kind {
             // One notch moves one line, and moves only the page: the cursor and
             // its highlight keep the line you stopped on.
             MouseEventKind::ScrollDown => self.scroll_by(1),
             MouseEventKind::ScrollUp => self.scroll_by(-1),
+            // The press only presses: whether this is a click or the start of a drag
+            // is not known until the button comes up again.
             MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) => {
-                let row = self.view.scroll + ev.row as usize;
-                let col = self.view.hscroll + (ev.column as usize).saturating_sub(self.padding_x());
-                if row < self.page.row_count() {
-                    self.view.cursor.row = row;
-                    self.view.cursor.col = col;
-                    self.view.cursor.desired = col;
-                    self.ensure_visible();
-                    if self.link_under_cursor().is_some() || self.disclosure_under_cursor().is_some() {
-                        self.follow_cursor();
-                    }
+                if let Some(at) = self.cell_at(ev.column.into(), ev.row.into()) {
+                    self.press_mouse(at);
                 }
+            }
+            // Dragging with the left button marks text: the press is one end of the
+            // mark, the cell under the pointer the other, and `y` takes what lies
+            // between them. The right and middle buttons belong to the terminal -
+            // its own selection, its own paste - and do nothing here.
+            MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left) => {
+                if let Some(at) = self.cell_at(ev.column.into(), ev.row.into()) {
+                    self.drag_mouse(at);
+                }
+            }
+            MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left) => {
+                self.release_mouse(self.cell_at(ev.column.into(), ev.row.into()));
             }
             _ => {}
         }

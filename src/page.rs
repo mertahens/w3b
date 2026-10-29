@@ -1,11 +1,13 @@
 //! A rendered resource: parsed document + link targets + laid out rows.
 use std::collections::{BTreeSet, VecDeque};
+use std::time::Instant;
 use url::Url;
 
 use crate::charset;
 use crate::css;
 use crate::dom::{Block, BlockKind, Doc, Link, Piece};
 use crate::error::NetError;
+use crate::json::Role;
 use crate::layout::{self, Layout};
 use crate::net::{Fetched, Fetcher, Kind};
 use crate::status::Status;
@@ -57,6 +59,44 @@ pub struct Page {
     /// How long the fetch took, in milliseconds. Only a real fetch has one:
     /// pages w3b wrote itself (errors, the loading placeholder) have `None`.
     pub load_ms: Option<u64>,
+    /// The same span taken apart: what the network cost and what w3b cost. Only a
+    /// real fetch has one, and `total` is exactly `load_ms`.
+    pub timings: Option<Timings>,
+    /// The stylesheets the page names, and how many of them were read.
+    pub css: CssRead,
+    /// How many bytes the body was: the page as it was sent, not as it is drawn.
+    pub bytes: usize,
+    /// True when the body is the file itself - JSON, plain text, a stylesheet -
+    /// rather than a page drawn around it. The monospace slab then covers the whole
+    /// text area instead of tracing the glyphs of each line.
+    pub file_view: bool,
+}
+
+/// Where the time of a page load went, in milliseconds. `total` is the whole span
+/// from starting the request to the page being laid out - the number the status
+/// line shows - and the parts are what w3b can see inside it, so they can add up to
+/// less than the total.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Timings {
+    /// DNS, connect, TLS, the redirects and the body, as one span.
+    pub fetch: u64,
+    /// The stylesheet round-trips, at most `behavior.max_stylesheets` of them.
+    pub css: u64,
+    /// Decoding the bytes, parsing the document, resolving every link.
+    pub parse: u64,
+    /// Wrapping the text into lines.
+    pub layout: u64,
+    /// The whole span, clocked by whoever started the request.
+    pub total: u64,
+}
+
+/// Stylesheets a page asks for, and how many w3b went and read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CssRead {
+    /// `<link rel=stylesheet>` written in the page, including ones behind the cap.
+    pub found: usize,
+    /// How many were fetched, at most `behavior.max_stylesheets`.
+    pub read: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,7 +108,7 @@ pub struct RenderOptions {
 
 impl Page {
     pub fn from_fetched(fetched: &Fetched, opts: RenderOptions) -> Page {
-        Self::from_fetched_css(fetched, opts, &css::Sheet::default())
+        Self::from_fetched_css(fetched, opts, &css::Sheet::default(), 0)
     }
 
     /// Interpret a response with the CSS it points at applied. Sheets are
@@ -80,12 +120,19 @@ impl Page {
         opts: RenderOptions,
         max: usize,
     ) -> Page {
+        let started = Instant::now();
         let html = charset::decode(&fetched.bytes, fetched.content_type.as_deref());
-        let sheet = gather_css(fetcher, &fetched.url, &html, max);
-        Self::from_fetched_css(fetched, opts, &sheet)
+        let (sheet, css) = gather_css(fetcher, &fetched.url, &html, max);
+        let css_ms = started.elapsed().as_millis() as u64;
+        let mut page = Self::from_fetched_css(fetched, opts, &sheet, css_ms);
+        page.css = css;
+        page
     }
 
-    fn from_fetched_css(fetched: &Fetched, opts: RenderOptions, styles: &css::Sheet) -> Page {
+    fn from_fetched_css(fetched: &Fetched, opts: RenderOptions, styles: &css::Sheet, css_ms: u64) -> Page {
+        // Everything up to the layout: decode the bytes, parse the document, work
+        // out where every link goes.
+        let started = Instant::now();
         let (doc, notice) = match fetched.kind() {
             Kind::Html => (
                 crate::dom::parse_with_css(
@@ -96,6 +143,21 @@ impl Page {
             ),
             Kind::Text | Kind::Css => {
                 (plain_text_doc(&charset::decode(&fetched.bytes, fetched.content_type.as_deref())), None)
+            }
+            Kind::Json => {
+                let text = charset::decode(&fetched.bytes, fetched.content_type.as_deref());
+                match crate::json::doc(&text) {
+                    Some(doc) => (doc, None),
+                    // A body the server called JSON and the scanner disagrees with is
+                    // shown exactly as it arrived, with the reason said out loud.
+                    None => (
+                        plain_text_doc(&text),
+                        Some(format!(
+                            "json that does not parse ({} bytes) - shown as it was sent",
+                            fetched.bytes.len()
+                        )),
+                    ),
+                }
             }
             Kind::Image => {
                 (Doc::default(), Some(format!("image ({} bytes) - not displayed", fetched.bytes.len())))
@@ -121,8 +183,19 @@ impl Page {
             layout: Layout::default(),
             notice,
             load_ms: None,
+            timings: None,
+            css: CssRead::default(),
+            bytes: fetched.bytes.len(),
+            file_view: matches!(fetched.kind(), Kind::Json | Kind::Text | Kind::Css),
         };
+        let parse_ms = started.elapsed().as_millis() as u64;
+        let started = Instant::now();
         page.relayout(opts);
+        let layout_ms = started.elapsed().as_millis() as u64;
+        // The fetch span and the total belong to whoever started the request; these
+        // three are the part that is w3b's own doing.
+        page.timings =
+            Some(Timings { css: css_ms, parse: parse_ms, layout: layout_ms, ..Timings::default() });
         page
     }
 
@@ -157,6 +230,10 @@ impl Page {
             layout,
             notice: None,
             load_ms: None,
+            timings: None,
+            css: CssRead::default(),
+            bytes: 0,
+            file_view: false,
         }
     }
 
@@ -186,6 +263,10 @@ impl Page {
             layout,
             notice: None,
             load_ms: None,
+            timings: None,
+            css: CssRead::default(),
+            bytes: 0,
+            file_view: false,
         }
     }
 
@@ -314,15 +395,16 @@ impl Page {
 
 /// The document's own `<style>` text plus the sheets it links to, in document
 /// order, with `@import` targets resolved against the sheet that named them.
-fn gather_css(fetcher: &dyn Fetcher, page_url: &str, html: &str, max: usize) -> css::Sheet {
+fn gather_css(fetcher: &dyn Fetcher, page_url: &str, html: &str, max: usize) -> (css::Sheet, CssRead) {
     let (embedded, links) = css::extract(html);
+    let found = links.len();
     let mut sheet = css::parse(&embedded);
     if max == 0 || links.is_empty() {
-        return sheet;
+        return (sheet, CssRead { found, read: 0 });
     }
     let base = match Url::parse(page_url) {
         Ok(base) => base,
-        Err(_) => return sheet,
+        Err(_) => return (sheet, CssRead { found, read: 0 }),
     };
     let mut queue: VecDeque<(Url, String)> = links.iter().map(|href| (base.clone(), href.clone())).collect();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -350,7 +432,7 @@ fn gather_css(fetcher: &dyn Fetcher, page_url: &str, html: &str, max: usize) -> 
         }
         sheet.rules.extend(parsed.rules);
     }
-    sheet
+    (sheet, CssRead { found, read: taken })
 }
 
 /// Servers often answer a missing stylesheet with an HTML error page; that must
@@ -379,6 +461,7 @@ fn piece() -> Piece {
         field: None,
         disclosure: None,
         media: None,
+        json: Role::Plain,
         hard_break: false,
     }
 }

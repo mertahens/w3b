@@ -24,9 +24,19 @@ pub struct Theme {
     pub monospace: Style,
     /// A `<details>` summary: plain text with an underline, and nothing else about it.
     pub disclosure: Style,
+    /// The `"key"` of a JSON object: the half a reader scans for.
+    pub json_key: Style,
+    /// A quoted string value in JSON.
+    pub json_string: Style,
+    /// A number in JSON.
+    pub json_number: Style,
+    /// `true`, `false` and `null` in JSON.
+    pub json_literal: Style,
     pub cursor: Style,
     pub cursor_line: Style,
     pub search_match: Style,
+    /// Text marked with v or V.
+    pub selection: Style,
     pub prompt: Style,
     pub message: Style,
     pub url: Style,
@@ -94,9 +104,14 @@ impl Theme {
             placeholder: spec(&c.placeholder, "placeholder")?,
             monospace: spec(&c.monospace, "monospace")?,
             disclosure: spec(&c.disclosure, "disclosure")?,
+            json_key: spec(&c.json_key, "json_key")?,
+            json_string: spec(&c.json_string, "json_string")?,
+            json_number: spec(&c.json_number, "json_number")?,
+            json_literal: spec(&c.json_literal, "json_literal")?,
             cursor: spec(&c.cursor, "cursor")?,
             cursor_line: spec(&c.cursor_line, "cursor_line")?,
             search_match: spec(&c.search_match, "search_match")?,
+            selection: spec(&c.selection, "selection")?,
             prompt: spec(&c.prompt, "prompt")?,
             message: spec(&c.message, "message")?,
             url: spec(&c.url, "url")?,

@@ -26,6 +26,12 @@ pub fn render_html(html: &str, width: usize) -> String {
     plain_text(&crate::layout::layout(&doc, width, 4, true))
 }
 
+/// Render a JSON body at a fixed width, laid out the way the browser lays it out.
+pub fn render_json(json: &str, width: usize) -> String {
+    let doc = crate::json::doc(json).expect("the body must be valid json to lay it out");
+    plain_text(&crate::layout::layout(&doc, width, 4, true))
+}
+
 /// Render an HTML fragment with an embedded stylesheet applied.
 pub fn render_html_css(html: &str, css: &str, width: usize) -> String {
     let sheet = crate::css::parse(css);

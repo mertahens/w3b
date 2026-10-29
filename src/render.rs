@@ -4,17 +4,17 @@ use std::borrow::Cow;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Widget};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode};
+use crate::json::Role;
 use crate::layout::CellStyle;
-use crate::status::Status;
+use crate::status::{self, Status};
 
 pub const HELP: &str = "\
-w3b keys  (i or ? toggles this)
+w3b keys  (? toggles this)
   j / k          down, up        gg / G      top, bottom
   h / l          left, right     0 ^ $       line edges
   Ctrl-d / Ctrl-u  half page     PgDn/PgUp   full page
@@ -23,12 +23,14 @@ w3b keys  (i or ? toggles this)
   o or :         open url        /           search
   n / N          next/prev hit   Esc         cancel
   [ or Backspace back            ]           forward
-  y              link/media      w           toggle wrap
+  v V drag       mark text       w           toggle wrap
+  y              what is marked, else link, else page
   g then ...     go-to menu
   in a field     typing edits it, Esc leaves it
   Enter there    sends the form, if it asks for a GET
   on a + or -    Enter shows or hides the lines under it
-  q or Ctrl-c    quit            i or ?      this help
+  i              page info: cost, what was left out
+  q or Ctrl-c    quit            ?           this help
 ";
 
 /// Compose the style for one run: semantic flags, never page colors.
@@ -46,9 +48,6 @@ fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
     if style.border {
         out = out.patch(app.theme.border);
     }
-    if style.muted {
-        out = out.patch(app.theme.muted);
-    }
     if style.heading {
         out = out.patch(app.theme.heading);
     } else if style.bold {
@@ -63,10 +62,28 @@ fn style_for(app: &App, style: CellStyle, link: Option<usize>) -> Style {
         // Applied last of the text styles so it wins over the colour for <code>.
         out = out.patch(app.theme.monospace);
     }
+    if style.muted {
+        // A muted thing is dimmed on purpose, and the slab only says that the text is
+        // monospace: on a monospace line the dimming still has to show, which is what
+        // keeps a JSON body's line numbers and its braces out of the reader's way.
+        out = out.patch(app.theme.muted);
+    }
     if style.disclosure {
         // The summary of a <details> is something to open rather than somewhere to
         // go, so it takes its own style instead of the link color.
         out = out.patch(app.theme.disclosure);
+    }
+    // JSON parts are coloured over the monospace slab: the slab says what shape the
+    // body has, the colours say what its pieces are.
+    match style.json {
+        Role::Key => out = out.patch(app.theme.json_key),
+        Role::String => out = out.patch(app.theme.json_string),
+        Role::Number => out = out.patch(app.theme.json_number),
+        Role::Literal => out = out.patch(app.theme.json_literal),
+        // Braces, commas and colons are structure rather than content, so they keep
+        // the reader's eye out of the way with the muted colour.
+        Role::Punct => out = out.patch(app.theme.muted),
+        Role::Plain => {}
     }
     if let Some(index) = link {
         let resolved = &app.page.links[index];
@@ -215,25 +232,71 @@ pub fn render_page(app: &App, area: Rect, buf: &mut Buffer) {
                 col += gw;
             }
         }
-        if first != usize::MAX {
-            for col in first.saturating_sub(1)..=last + 1 {
+        // A direct view of a file - JSON, plain text, a stylesheet - is nothing but
+        // its own text, so there is no prose to set the code apart from: the slab is
+        // the whole text area rather than the outline of the glyphs on one line.
+        let whole = app.page.file_view;
+        let from = if whole { 0 } else { first.saturating_sub(1) };
+        let to = if whole { usize::from(area.width).saturating_sub(2 * pad + 1) } else { last + 1 };
+        if whole || first != usize::MAX {
+            for col in from..=to {
                 let x = pad as isize + col as isize - hscroll as isize;
                 if x >= 0 && (x as usize) < usize::from(area.width) {
                     let cell = &mut buf[(area.x + x as u16, y)];
-                    // Text cells keep the style they were drawn with, so a link, a
-                    // search hit or the cursor on a code line stays visible.
-                    if cell.symbol().trim().is_empty()
-                        || row.runs.iter().any(|r| {
+                    // In a page, a glyph that is not part of a monospace run is prose
+                    // next to the code and must not be painted over. In a file view there
+                    // is no prose: every cell of the row is the file's own text.
+                    if !whole {
+                        let in_mono = row.runs.iter().any(|r| {
                             r.style.mono && {
                                 let end =
                                     r.start + r.text.graphemes(true).map(|g| g.width().max(1)).sum::<usize>();
                                 col >= r.start && col < end
                             }
-                        })
-                    {
-                        cell.set_style(cell.style().patch(app.theme.monospace));
+                        });
+                        if !cell.symbol().trim().is_empty() && !in_mono {
+                            continue;
+                        }
                     }
+                    // A search hit is a mark on the page rather than a property of the
+                    // text, so the slab goes under it, not over it.
+                    if let Some(hits) = hits {
+                        if hits.iter().any(|(start, end)| col >= *start && col < *end) {
+                            continue;
+                        }
+                    }
+                    // The cell under the cursor is the app's own mark: on a wall of
+                    // monospace text it is the one thing that has to stand out.
+                    if is_cursor_row && app.view.cursor.col == col {
+                        continue;
+                    }
+                    // The slab is a background and nothing else: whatever colour a glyph
+                    // was painted with - a link, a part of a JSON body - survives it.
+                    let mut slab = app.theme.monospace;
+                    if let Some(fg) = cell.style().fg {
+                        slab = slab.patch(Style::default().fg(fg));
+                    }
+                    cell.set_style(cell.style().patch(slab));
                 }
+            }
+        }
+
+        // The mark of a visual selection goes over everything above, including the
+        // monospace slab: it says which cells y would take, so it has to be legible
+        // wherever it lands. The cell under the cursor is left out - it already has
+        // the cursor's own colours, and the two marks side by side would read as one.
+        if let Some((start, end)) = app.visual_span(i) {
+            for col in start..end {
+                let x = pad as isize + col as isize - hscroll as isize;
+                if x < 0 || (x as usize) >= usize::from(area.width) {
+                    continue;
+                }
+                if is_cursor_row && app.view.cursor.col == col {
+                    continue;
+                }
+                let cell = &mut buf[(area.x + x as u16, y)];
+                let patched = cell.style().patch(app.theme.selection);
+                cell.set_style(patched);
             }
         }
     }
@@ -298,13 +361,23 @@ pub fn render_status(app: &App, area: Rect, buf: &mut Buffer) {
     let left_style = app.theme.status.for_status(status.kind(), status.code());
     let left_width = draw(buf, area, 0, &left, left_style);
 
-    // Right hand side: how long the page took to load, then the cursor's
-    // position in the document.
-    let percent = format!("{:>3}%", app.percent());
-    let right = match (app.config.behavior.show_load_time, app.load_time_text()) {
-        (true, Some(took)) => format!("{took}  {percent}"),
-        _ => percent,
-    };
+    // Right hand side: how long the page took, how big it was, then the cursor's
+    // position in the document. Either of the first two can be switched off, and the
+    // size is missing entirely while a fetch is in flight, so the parts are collected
+    // rather than fitted into one shape.
+    let mut parts: Vec<String> = Vec::new();
+    if app.config.behavior.show_load_time {
+        if let Some(took) = app.load_time_text() {
+            parts.push(took);
+        }
+    }
+    if app.config.behavior.show_size {
+        if let Some(size) = app.size_text() {
+            parts.push(size);
+        }
+    }
+    parts.push(format!("{:>3}%", app.percent()));
+    let right = parts.join("  ");
     let right_style = app.theme.position.patch(bar);
     let right_start = width.saturating_sub(right.width());
     draw(buf, area, right_start, &right, right_style);
@@ -317,6 +390,11 @@ pub fn render_status(app: &App, area: Rect, buf: &mut Buffer) {
         Some(msg) => {
             let style = if msg.error { app.theme.status.error } else { app.theme.message };
             (Cow::Owned(msg.text.clone()), style.patch(bar_style))
+        }
+        // Marking text: say how much, because that is what the user wants to know
+        // before pressing y. It outranks the hover hint.
+        None if app.mode == Mode::Visual => {
+            (Cow::Owned(app.visual_status().unwrap_or_default()), app.theme.message.patch(bar_style))
         }
         // Standing on a link: show where it goes.
         None if app.hover_target().is_some() => {
@@ -409,7 +487,7 @@ pub fn cursor_screen_pos(app: &App, area: Rect) -> Option<(u16, u16)> {
                 None
             }
         }
-        Mode::Normal | Mode::Help => None,
+        Mode::Normal | Mode::Help | Mode::Info | Mode::Visual => None,
     }
 }
 
@@ -438,6 +516,9 @@ pub fn draw_all(app: &App, area: Rect, buf: &mut Buffer) {
     if app.mode == Mode::Help {
         render_help(area, buf, app);
     }
+    if app.mode == Mode::Info {
+        render_info(area, buf, app);
+    }
 }
 
 /// The which-key menu shown while `g` waits for its command.
@@ -463,21 +544,139 @@ fn render_goto_menu(app: &App, area: Rect, buf: &mut Buffer) {
 }
 
 fn render_help(area: Rect, buf: &mut Buffer, app: &App) {
-    let lines: Vec<Line> = HELP.lines().map(Line::from).collect();
+    let lines: Vec<String> = HELP.lines().map(str::to_string).collect();
+    render_box(app, area, buf, "w3b", &lines);
+}
+
+/// A bordered pane, centred in the terminal, holding plain text lines: the help
+/// screen and the page info pane are the same box with different words in them.
+fn render_box(app: &App, area: Rect, buf: &mut Buffer, title: &str, lines: &[String]) {
     let height = (lines.len() as u16 + 2).min(area.height);
-    let longest = HELP.lines().map(str::width).max().unwrap_or(0) as u16 + 4;
+    let longest = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16 + 4;
     let width = longest.min(area.width.saturating_sub(2)).max(20);
     let width = width.min(area.width);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     let box_area = Rect { x, y, width, height };
     Clear.render(box_area, buf);
-    Block::bordered().border_style(app.theme.border).title(" w3b ").render(box_area, buf);
+    Block::bordered().border_style(app.theme.border).title(format!(" {title} ")).render(box_area, buf);
     let inner = Rect { x: x + 1, y: y + 1, width: width.saturating_sub(2), height: height.saturating_sub(2) };
-    for (i, line) in lines.iter().enumerate().take(usize::from(inner.height)) {
-        let text = line.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
-        draw_row(buf, inner, i, &text, app.theme.text.patch(app.theme.status.base));
+    for (i, text) in lines.iter().enumerate().take(usize::from(inner.height)) {
+        draw_row(buf, inner, i, text, app.theme.text.patch(app.theme.status.base));
     }
+}
+
+/// The info pane: what the last load cost, what came back, and what the page asked
+/// for that w3b did not go and get. Every number was counted while the page was
+/// read, so it is what that page really holds rather than an estimate.
+fn render_info(area: Rect, buf: &mut Buffer, app: &App) {
+    render_box(app, area, buf, "page info", &info_lines(app));
+}
+
+/// The lines of the info pane, as a public function so a test can read the numbers
+/// without rebuilding a screen out of cells.
+pub fn info_lines(app: &App) -> Vec<String> {
+    let page = &app.page;
+    let mut out = vec![
+        format!(" url   {}", page.url),
+        format!(" {}  {}", page.status.text(), status::human_size(page.bytes)),
+    ];
+    if let Some(notice) = &page.notice {
+        out.push(format!("       {notice}"));
+    }
+    out.push(String::new());
+
+    match page.timings {
+        Some(t) => {
+            out.push(format!(" time  {} ms for the whole page", t.total));
+            out.push(format!(
+                "        net {} + css {} + parse {} + layout {} ms",
+                t.fetch, t.css, t.parse, t.layout
+            ));
+        }
+        None => out.push(" time  nothing was fetched: a page w3b wrote itself".to_string()),
+    }
+    out.push(format!(" got   1 page, {} of {} stylesheets", page.css.read, page.css.found));
+
+    // What a browser would have fetched and w3b left alone, in the order a reader
+    // is likely to care about.
+    let ignored = page.doc.ignored;
+    let missed = page.css.found.saturating_sub(page.css.read);
+    let mut parts: Vec<String> = Vec::new();
+    if ignored.images > 0 {
+        parts.push(count(ignored.images, "image"));
+    }
+    if ignored.video_audio > 0 {
+        parts.push(format!("{} video/audio", ignored.video_audio));
+    }
+    if missed > 0 {
+        parts.push(count(missed, "stylesheet"));
+    }
+    if ignored.scripts > 0 {
+        parts.push(count(ignored.scripts, "script"));
+    }
+    if ignored.frames > 0 {
+        parts.push(count(ignored.frames, "frame"));
+    }
+    if ignored.markup > 0 {
+        parts.push(format!("{} svg/canvas/markup", ignored.markup));
+    }
+    if ignored.links > 0 {
+        parts.push(count(ignored.links, "other link"));
+    }
+    if parts.is_empty() {
+        out.push(" left  nothing: w3b asked for everything this page did".to_string());
+    } else {
+        for (n, chunk) in wrap_list(&parts.join(", "), 46).into_iter().enumerate() {
+            out.push(format!(" {}  {}", if n == 0 { "left" } else { "    " }, chunk));
+        }
+    }
+
+    let off_site = page.links.iter().filter(|link| link.external).count();
+    out.push(String::new());
+    out.push(format!(
+        " here  {}, {} ({off_site} off-site)",
+        count(page.row_count(), "line"),
+        count(page.links.len(), "link")
+    ));
+    out.push(format!(
+        "        {}, {}, {}, {}",
+        count(page.doc.tables.len(), "table"),
+        count(page.doc.fields.len(), "field"),
+        count(page.doc.disclosures.len(), "disclosure"),
+        count(page.doc.media.len(), "media label")
+    ));
+    out.push(String::new());
+    out.push(" any key closes".to_string());
+    out
+}
+
+/// A count with its word, so the pane reads `1 line` and not `1 lines`.
+fn count(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
+/// Split a comma separated list into pieces that fit the box, never mid-word.
+fn wrap_list(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for part in text.split(", ") {
+        if !line.is_empty() && line.chars().count() + part.chars().count() + 2 > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push_str(", ");
+        }
+        line.push_str(part);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn draw_row(buf: &mut Buffer, area: Rect, row: usize, text: &str, style: Style) {

@@ -1,0 +1,28 @@
+---
+source: tests/render_tui.rs
+expression: screen
+---
+ [img: one] [video: v]
+
+
+
+    ┌ page info ────────────────────────────────────────────────┐
+    │ url   https://test.local/home                             │
+    │ 200 OK  297 B                                             │
+    │                                                           │
+    │ time  0 ms for the whole page                             │
+    │        net 0 + css 0 + parse 0 + layout 0 ms              │
+    │ got   1 page, 2 of 2 stylesheets                          │
+    │ left  2 images, 1 video/audio, 2 scripts, 1 frame         │
+    │       2 svg/canvas/markup, 1 other link                   │
+    │                                                           │
+    │ here  1 line, 0 links (0 off-site)                        │
+    │        0 tables, 0 fields, 0 disclosures, 2 media labels  │
+    │                                                           │
+    │ any key closes                                            │
+    └───────────────────────────────────────────────────────────┘
+
+
+
+
+ 200 OK  https://test.local/home — many             42 ms  297 B  100%

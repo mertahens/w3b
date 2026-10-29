@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use w3b::app::{App, Viewport};
 use w3b::theme::Theme;
 use w3b::FakeFetcher;
@@ -179,4 +179,56 @@ pub fn type_str(app: &mut App, s: &str) {
 
 pub fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!("fixtures/{name}")).expect("fixture present")
+}
+
+/// A mouse event over a terminal cell: the terminal counts columns and rows from 0
+/// in its top left corner, which is not where the page text starts - see `cell`.
+pub fn mouse(kind: MouseEventKind, column: usize, row: usize) -> MouseEvent {
+    MouseEvent { kind, column: column as u16, row: row as u16, modifiers: KeyModifiers::NONE }
+}
+
+/// The terminal cell a layout cell is drawn in, as (row, column) like every other
+/// position in w3b - the mouse events themselves count the other way round.
+pub fn cell(app: &App, row: usize, column: usize) -> (usize, usize) {
+    (row - app.view.scroll, column + app.padding_x() - app.view.hscroll)
+}
+
+/// Press and release the left button over one cell: a click.
+pub fn click(app: &mut App, at: (usize, usize)) {
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), at.1, at.0));
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), at.1, at.0));
+}
+
+/// Drag the left button from one cell to another, passing over the cells in between
+/// the way a real drag does: press, a run of drags, release.
+pub fn drag(app: &mut App, from: (usize, usize), to: (usize, usize)) {
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), from.1, from.0));
+    let (mut row, mut column) = from;
+    while (row, column) != to {
+        if row != to.0 {
+            row = if to.0 > row { row + 1 } else { row - 1 };
+        } else {
+            column = if to.1 > column { column + 1 } else { column - 1 };
+        }
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), column, row));
+    }
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), to.1, to.0));
+}
+
+/// Where `needle` first appears on the page, as a layout position: what the keys
+/// work on. The page is plain text here, so a byte index is a column index.
+pub fn page_cell(app: &App, needle: &str) -> (usize, usize) {
+    for (row, layout_row) in app.rows().iter().enumerate() {
+        let text = layout_row.slice(0, layout_row.width);
+        if let Some(byte) = text.find(needle) {
+            return (row, text[..byte].chars().count());
+        }
+    }
+    panic!("nothing on the page says {needle:?}");
+}
+
+/// The same thing seen from the terminal, for the mouse.
+pub fn cell_of(app: &App, needle: &str) -> (usize, usize) {
+    let (row, column) = page_cell(app, needle);
+    cell(app, row, column)
 }

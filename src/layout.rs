@@ -3,6 +3,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::dom::{Block, BlockKind, Doc, Piece};
+use crate::json::Role;
 
 /// Style of one run of a row. Semantic only - the colors come from the theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,6 +21,8 @@ pub struct CellStyle {
     pub disclosure: bool,
     /// Monospace font: the renderer greys the whole line.
     pub mono: bool,
+    /// Which part of a JSON body the run is: colour only, never structure.
+    pub json: Role,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +66,45 @@ impl Row {
     /// The run covering a display column, if any.
     pub fn run_at(&self, col: usize) -> Option<&Run> {
         self.runs.iter().find(|r| r.start <= col && col < r.end())
+    }
+
+    /// How wide the glyph *starting* at this column is, or `None` when the column is
+    /// blank or falls inside a wide glyph. A selection ends on a glyph, not beside it.
+    pub fn glyph_at(&self, col: usize) -> Option<usize> {
+        let run = self.runs.iter().find(|r| r.start <= col && col < r.end())?;
+        let mut at = run.start;
+        for g in run.text.graphemes(true) {
+            let w = g.width().max(1);
+            if at == col {
+                return Some(w);
+            }
+            at += w;
+        }
+        None
+    }
+
+    /// The text of the row between two display columns, `to` exclusive. Where the
+    /// layout left a gap between two runs the slice gets a space, so the text reads as
+    /// it looks on the screen.
+    pub fn slice(&self, from: usize, to: usize) -> String {
+        let mut out = String::new();
+        let mut pos = 0usize;
+        for run in self.runs.iter() {
+            if run.start > pos {
+                let fill = run.start.min(to).saturating_sub(pos.max(from));
+                out.push_str(&" ".repeat(fill));
+                pos = run.start;
+            }
+            for g in run.text.graphemes(true) {
+                let w = g.width().max(1);
+                let end = pos + w;
+                if end > from && pos < to {
+                    out.push_str(g);
+                }
+                pos = end;
+            }
+        }
+        out
     }
 }
 
@@ -245,7 +287,7 @@ fn layout_pre(out: &mut Layout, block: &Block, indent: usize, opts: Options) {
         disclosure: None,
         media: None,
     };
-    let col = indent_run.width();
+    let mut col = indent_run.width();
     let mut row = Row { runs: vec![indent_run], width: col };
     for piece in &block.pieces {
         let style = style_of(piece, false);
@@ -259,10 +301,15 @@ fn layout_pre(out: &mut Layout, block: &Block, indent: usize, opts: Options) {
             disclosure: piece.disclosure,
             media: piece.media,
         };
+        let end = run.end();
         if let Some(link) = piece.link {
-            out.links.push(LinkPlacement { link, row: out.rows.len(), start: col, end: run.end() });
+            out.links.push(LinkPlacement { link, row: out.rows.len(), start: col, end });
         }
-        row.width = row.width.max(run.end());
+        row.width = row.width.max(end);
+        // A preformatted line can hold more than one piece - colour spans in a JSON
+        // body, markup inside a `<pre>` - and each has to start where the previous
+        // one stopped, or they land on top of each other.
+        col = end;
         row.runs.push(run);
     }
     trim_and_push(out, row);
@@ -459,6 +506,7 @@ fn style_of(piece: &Piece, heading: bool) -> CellStyle {
         placeholder: false,
         disclosure: piece.disclosure.is_some(),
         mono: piece.mono,
+        json: piece.json,
     }
 }
 
@@ -1002,6 +1050,7 @@ fn table_fallback(out: &mut Layout, table: &crate::dom::Table, indent: usize, op
                     field: None,
                     disclosure: None,
                     media: None,
+                    json: Role::Plain,
                     hard_break: false,
                 });
             }

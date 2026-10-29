@@ -8,6 +8,7 @@
 //! the renderer can grey the line. Colours, sizes and layout properties from CSS
 //! are still ignored; w3b has no box model to apply them to.
 use crate::css;
+use crate::json::Role;
 use ego_tree::NodeRef;
 use scraper::node::Node;
 use scraper::Html;
@@ -31,6 +32,9 @@ pub struct Piece {
     pub italic: bool,
     pub code: bool,
     pub muted: bool,
+    /// Which part of a JSON body this text is, for colour. `Plain` on every page
+    /// that is not JSON.
+    pub json: Role,
     /// An image or media placeholder such as `[alt text]`: index into
     /// `Doc::media`, so `y` on it can report where the thing itself comes from.
     pub media: Option<usize>,
@@ -223,7 +227,7 @@ pub struct Ignored {
     /// `<img>` elements. w3b draws a label and never loads the pixels.
     pub images: usize,
     /// `<video>` and `<audio>` elements.
-    pub media: usize,
+    pub video_audio: usize,
     /// `<link rel=stylesheet>`, however many; w3b reads at most
     /// `behavior.max_stylesheets` of them.
     pub stylesheets: usize,
@@ -451,8 +455,9 @@ impl Builder {
                 }
             }
             "iframe" | "frame" | "object" | "embed" => ignored.frames += 1,
-            "svg" | "math" | "canvas" | "picture" | "source" | "track" | "template" | "noscript"
-            | "map" => ignored.markup += 1,
+            "svg" | "math" | "canvas" | "picture" | "source" | "track" | "template" | "noscript" | "map" => {
+                ignored.markup += 1
+            }
             // <style> is read (embedded CSS is parsed) and <meta>/<title> ask for
             // nothing, so neither belongs in the tally.
             _ => {}
@@ -633,7 +638,7 @@ impl Builder {
                 // itself is one more thing the page wanted and w3b did not ask for.
                 match kind {
                     "img" => self.doc.ignored.images += 1,
-                    _ => self.doc.ignored.media += 1,
+                    _ => self.doc.ignored.video_audio += 1,
                 }
                 if label.is_empty() {
                     return;
@@ -946,6 +951,7 @@ impl Builder {
             media: ctx.media,
             field: ctx.field,
             disclosure: ctx.disclosure,
+            json: Role::Plain,
             hard_break: false,
         });
     }
@@ -1108,6 +1114,7 @@ fn plain(ctx: Ctx) -> Piece {
         media: ctx.media,
         field: ctx.field,
         disclosure: ctx.disclosure,
+        json: Role::Plain,
         hard_break: false,
     }
 }
@@ -1932,5 +1939,23 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1);
         let text: String = doc.blocks[0].pieces.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(text, "a b c");
+    }
+    #[test]
+    fn the_page_counts_what_w3b_leaves_out() {
+        let doc = parse(
+            "<head><link rel=stylesheet href=/a.css><link rel=stylesheet href=b.css>\
+             <link rel=icon href=/f.ico><meta charset=utf-8><style>p{color:red}</style></head>\
+             <body><script src=/a.js></script><script>inline()</script>\
+             <iframe src=/fr></iframe><object data=/o></object>\
+             <p><img src=/1.png alt=one><img alt=blank><video><source src=/v.webm></video>\
+             <svg></svg><canvas></canvas><template>t</template></p>",
+        );
+        // A `<style>` is read (embedded CSS is parsed) and `<meta>` asks for
+        // nothing, so neither is counted. A `<source>` inside a `<video>` is part of
+        // that one label, so it is not counted twice either.
+        assert_eq!(
+            doc.ignored,
+            Ignored { images: 2, video_audio: 1, stylesheets: 2, scripts: 2, frames: 2, markup: 3, links: 1 }
+        );
     }
 }

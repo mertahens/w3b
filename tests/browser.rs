@@ -2,8 +2,10 @@
 //! search and the status line. Driven through FakeFetcher, so no network.
 mod common;
 
-use common::{char_key, ctrl, fake_app, fixture, key, press, type_str};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use common::{
+    cell, cell_of, char_key, click, ctrl, drag, fake_app, fixture, key, mouse, page_cell, press, type_str,
+};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use w3b::app::Mode;
 use w3b::error::NetError;
 use w3b::FakeFetcher;
@@ -264,7 +266,7 @@ fn resize_relayouts_the_same_document() {
 #[test]
 fn q_quits_and_esc_leaves_help() {
     let mut app = fake_app(home_fetcher(), HOME, 70, 24);
-    app.handle_key(key(KeyCode::Char('i')));
+    app.handle_key(key(KeyCode::Char('?')));
     assert!(matches!(app.mode, Mode::Help));
     app.handle_key(key(KeyCode::Esc));
     assert!(matches!(app.mode, Mode::Normal));
@@ -319,18 +321,16 @@ fn control_keys_scroll_by_pages() {
 
 #[test]
 fn mouse_click_follows_a_link() {
-    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
     let mut app = fake_app(home_fetcher(), HOME, 70, 24);
     let p = *app.page.layout.links.first().unwrap();
     // The screen keeps `page_padding_x` blank columns on the left, so a layout
     // column is that many columns further right on screen.
-    let ev = MouseEvent {
-        kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
-        column: (p.start + app.padding_x()) as u16,
-        row: p.row as u16,
-        modifiers: KeyModifiers::NONE,
-    };
-    app.handle_mouse(ev);
+    let at = cell(&app, p.row, p.start);
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), at.1, at.0));
+    assert_eq!(app.url(), HOME, "the press waits: only the release can tell a click from a drag");
+    assert_eq!((app.view.cursor.row, app.view.cursor.col), (p.row, p.start), "it still moves the cursor");
+    app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), at.1, at.0));
     app.settle();
     assert_eq!(app.url(), "https://test.local/second");
 }
@@ -406,6 +406,265 @@ fn a_wheel_then_a_key_does_not_drag_the_page_back() {
     app.handle_key(key(KeyCode::Char('j')));
     assert_eq!(app.view.cursor.row, parked + 1, "one key, one line");
     assert_eq!(app.view.scroll, scrolled, "the page does not jump back the margin");
+}
+
+// --- marking text: `v`, the mouse, and `y` --------------------------------
+
+#[test]
+fn dragging_the_mouse_marks_text_and_y_takes_it() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let here = cell_of(&app, "Design notes");
+    drag(&mut app, here, (here.0, here.1 + 5));
+    assert_eq!(app.mode, Mode::Visual, "a drag leaves the text marked");
+    assert_eq!(app.selected_text().as_deref(), Some("Design"));
+    assert_eq!(app.visual_status().as_deref(), Some("6 selected"));
+    assert_eq!(press(&mut app, KeyCode::Char('y')), w3b::Action::Yank("Design".to_string()));
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("yanked 6 characters"));
+    assert_eq!(app.mode, Mode::Visual, "yanking does not end the mark");
+}
+
+#[test]
+fn a_drag_across_a_link_marks_it_instead_of_following_it() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let here = cell_of(&app, "second page");
+    drag(&mut app, here, (here.0, here.1 + 5));
+    app.settle();
+    assert_eq!(app.url(), HOME, "dragging over a link is marking, not following");
+    assert_eq!(app.selected_text().as_deref(), Some("second"));
+}
+
+#[test]
+fn a_click_after_a_drag_drops_the_mark() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let here = cell_of(&app, "Design notes");
+    drag(&mut app, here, (here.0, here.1 + 5));
+    assert!(app.view.visual.is_some());
+    let elsewhere = cell_of(&app, "Code");
+    click(&mut app, elsewhere);
+    assert!(app.view.visual.is_none(), "a click somewhere else asks for something else");
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn the_wheel_while_marking_keeps_the_mark_and_only_moves_its_far_end() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let wheel = |kind| MouseEvent { kind, column: 4, row: 4, modifiers: KeyModifiers::NONE };
+    // A short window: the wheel has somewhere to go and a reason to park the cursor.
+    let mut app = fake_app(home_fetcher(), HOME, 70, 10);
+    let here = cell_of(&app, "first item");
+    drag(&mut app, here, (here.0, here.1 + 9));
+    let (marked, text) = (app.view.visual, app.selected_text());
+
+    // The marked line is still on screen, so the wheel moves the page alone.
+    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    assert_eq!(app.view.visual, marked);
+    assert_eq!(app.selected_text(), text, "a mark is a place on the page, not on the screen");
+
+    // Turn it far enough that the marked line slides out of the window and the cursor
+    // is parked inside it: the mark stretches with the cursor, as every other move
+    // does, so `y` still copies from where the button went down to where it stopped.
+    for _ in 0..4 {
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    assert_eq!(app.view.visual, marked, "the end the button went down on stays put");
+    assert_eq!(app.view.cursor.row, app.view.scroll + app.config.behavior.scroll_margin);
+    assert!(
+        app.selected_text().unwrap().starts_with("first item"),
+        "the mark still starts at the marked word"
+    );
+    assert_eq!(app.mode, Mode::Visual, "scrolling does not end the mark");
+}
+
+#[test]
+fn v_marks_text_and_the_cursor_keys_move_its_far_end() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let (row, col) = page_cell(&app, "bold");
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.mode, Mode::Visual);
+    assert_eq!(app.view.visual, Some(w3b::app::Anchor { row, col, linewise: false }));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.selected_text().as_deref(), Some("bold"), "the cell under the cursor belongs to it");
+    assert_eq!(app.visual_status().as_deref(), Some("4 selected"));
+    assert_eq!(press(&mut app, KeyCode::Char('y')), w3b::Action::Yank("bold".to_string()));
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("yanked 4 characters"));
+}
+
+#[test]
+fn capital_v_takes_whole_lines() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let (row, _) = page_cell(&app, "first item");
+    app.move_cursor_to((row, 0));
+    press(&mut app, KeyCode::Char('V'));
+    press(&mut app, KeyCode::Down);
+    let text = app.selected_text().expect("a mark is open");
+    assert_eq!(text.lines().count(), 2, "two rows, end to end");
+    assert!(text.contains("first item") && text.contains("second item"), "{text:?}");
+    assert_eq!(press(&mut app, KeyCode::Char('y')), w3b::Action::Yank(text));
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("yanked 2 lines"));
+}
+
+#[test]
+fn v_and_capital_v_switch_between_characters_and_whole_lines() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let linewise =
+        |app: &w3b::App| app.view.visual.map_or("none", |a| if a.linewise { "lines" } else { "chars" });
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(linewise(&app), "chars");
+    press(&mut app, KeyCode::Char('V'));
+    assert_eq!(linewise(&app), "lines", "the same key pair as vim");
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(linewise(&app), "chars");
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(linewise(&app), "none", "the key that opened the mark closes it");
+    assert_eq!(app.mode, Mode::Normal);
+    press(&mut app, KeyCode::Char('V'));
+    assert_eq!(linewise(&app), "lines");
+    press(&mut app, KeyCode::Char('V'));
+    assert_eq!(linewise(&app), "none");
+}
+
+#[test]
+fn a_drag_mark_turned_into_lines_takes_the_whole_rows() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let from = cell_of(&app, "second page");
+    let to = cell_of(&app, "anchor");
+    drag(&mut app, from, to);
+    assert_eq!(app.view.visual.map(|a| a.linewise), Some(false), "a drag marks characters");
+    assert_eq!(app.selected_text().as_deref().map(|t| t.lines().count()), Some(2));
+    press(&mut app, KeyCode::Char('V'));
+    let text = app.selected_text().expect("a mark is open");
+    assert_eq!(text.lines().count(), 2);
+    assert!(
+        text.starts_with("Some bold"),
+        "rows are taken from their own beginning, not from where the drag began: {text:?}"
+    );
+    assert!(text.ends_with("anchor."), "and to their end: {text:?}");
+}
+
+#[test]
+fn a_mark_that_the_cursor_walks_past_is_still_the_same_mark() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let (row, _) = page_cell(&app, "Code");
+    app.move_cursor_to((row, 0));
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Up);
+    // The cursor is now above the anchor, and the two ends simply swap places.
+    assert_eq!(app.visual_ends(), Some((row - 2, 0, row, 0)));
+    let above = app.selected_text().expect("a mark is open");
+    assert!(above.ends_with('C') && above.contains("width nicely"), "{above:?}");
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.visual_ends(), Some((row, 0, row + 1, 0)), "the far end followed the cursor");
+}
+
+#[test]
+fn gg_in_a_mark_stretches_it_to_the_top_of_the_page() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    for _ in 0..6 {
+        press(&mut app, KeyCode::Char('j'));
+    }
+    let here = app.view.cursor;
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.view.cursor.row, 0, "the jump still works while marking");
+    assert_eq!(app.view.visual.map(|a| (a.row, a.col)), Some((here.row, here.col)));
+    assert_eq!(app.visual_status().map(|s| s.ends_with("selected")), Some(true));
+    // What the mark does not offer while marking is the page-changing half of the menu.
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('r'));
+    assert!(!app.is_loading(), "no reload from inside a mark");
+    assert_eq!(app.mode, Mode::Visual);
+}
+
+#[test]
+fn a_mark_silences_the_keys_that_would_leave_the_page() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    press(&mut app, KeyCode::Char('v'));
+    for c in ['o', ':', '/', 'n', 'N', 'r', 'i', '?', ']', '['] {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.mode, Mode::Visual, "still marking: no prompt, no pane, no reload");
+    assert!(!app.is_loading());
+    assert_eq!(app.url(), HOME);
+    assert_eq!(app.input, "", "no prompt was opened");
+}
+
+#[test]
+fn esc_leaves_a_mark_and_leaves_the_cursor_where_it_stopped() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let (row, col) = page_cell(&app, "bold");
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..2 {
+        press(&mut app, KeyCode::Char('l'));
+    }
+    let here = app.view.cursor;
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.view.visual, None);
+    assert_eq!(app.view.cursor, here, "leaving the mark does not move the cursor");
+}
+
+#[test]
+fn a_blank_mark_says_so_rather_than_yanking_nothing() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let blank = app.rows().iter().position(|r| r.is_blank()).expect("the page has a blank row");
+    app.move_cursor_to((blank, 0));
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(press(&mut app, KeyCode::Char('y')), w3b::Action::None, "there is nothing to copy");
+    let message = app.message.as_ref().expect("a note about it");
+    assert!(message.error, "and it is an error: nothing was copied");
+    assert_eq!(message.text, "the selection is blank");
+    assert_eq!(app.mode, Mode::Visual, "the mark stays open to be moved");
+}
+
+#[test]
+fn a_mark_belongs_to_the_page_it_was_made_on() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let here = cell_of(&app, "Design notes");
+    drag(&mut app, here, (here.0, here.1 + 3));
+    app.open("https://test.local/second");
+    assert_eq!(app.url(), "https://test.local/second");
+    assert!(app.view.visual.is_none(), "the new page does not inherit a mark");
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn a_re_layout_drops_the_mark() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let here = cell_of(&app, "second item");
+    drag(&mut app, here, (here.0, here.1 + 20));
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.view.visual.is_none(), "the text moved to other rows and columns");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("wrap off"));
+}
+
+#[test]
+fn a_press_lands_after_a_note_rather_than_keeping_it() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+
+    // Standing on text rather than a link, y takes the page and says so.
+    let action = press(&mut app, KeyCode::Char('y'));
+    assert!(matches!(action, w3b::Action::Yank(url) if url == HOME));
+    assert!(app.message.is_some(), "the note is up");
+
+    // The wheel only moves the page, so the note is left alone.
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+    assert!(app.message.is_some(), "scrolling is not asking for anything");
+
+    // The left button is: whatever the last action reported is done with, and the
+    // status line goes back to what the page is showing.
+    let at = cell_of(&app, "Design notes");
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), at.1, at.0));
+    assert!(app.message.is_none());
 }
 
 #[test]
@@ -892,4 +1151,29 @@ fn the_cursor_keeps_its_column_past_the_end_of_a_short_line() {
         app.handle_key(key(KeyCode::Char('l')));
     }
     assert_eq!(app.view.cursor.col, app.content_width(), "the far edge of the page is the limit");
+}
+
+#[test]
+fn a_json_body_can_be_searched_like_any_other_text() {
+    const API: &str = "https://test.local/api.json";
+    let json = r#"{"results":[{"title":"first one"},{"title":"second one"}],"count":2}"#;
+    let mut app = fake_app(FakeFetcher::new().with_type(API, 200, "application/json", json), API, 60, 14);
+    app.handle_key(key(KeyCode::Char('/')));
+    assert!(matches!(app.mode, Mode::Search));
+    type_str(&mut app, "title");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.matches.len(), 2, "the key appears once in each object: {:?}", app.matches);
+    let first = app.view.cursor.row;
+    app.handle_key(key(KeyCode::Char('n')));
+    assert_ne!(app.view.cursor.row, first, "n walks to the next hit");
+}
+
+#[test]
+fn a_json_body_the_server_broke_is_still_shown() {
+    const API: &str = "https://test.local/api.json";
+    let app = fake_app(FakeFetcher::new().with_type(API, 200, "application/json", "{\"a\":1,}"), API, 60, 14);
+    let text = page_text(&app);
+    assert!(text.contains("{\"a\":1,}"), "the bytes are shown as sent: {text}");
+    let notice = app.page.notice.clone().unwrap_or_default();
+    assert!(notice.contains("does not parse"), "{notice}");
 }

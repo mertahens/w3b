@@ -17,4 +17,4 @@ expression: "draw(&app, 62, 16)"
        println!("hello");
    }
 
- 200 OK  https://test.local/home — Design notes -… 42 ms    0%
+ 200 OK  https://test.local/home — Design … 42 ms  604 B    0%

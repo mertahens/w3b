@@ -64,6 +64,7 @@ pub struct StyleConfig {
     pub cursor: StyleSpec,
     pub cursor_line: StyleSpec,
     pub search_match: StyleSpec,
+    pub selection: StyleSpec,
     pub prompt: StyleSpec,
     pub message: StyleSpec,
     pub url: StyleSpec,
@@ -80,6 +81,14 @@ pub struct StyleConfig {
     /// The summary line of a `<details>`: plain text with an underline, because it
     /// is something to open rather than somewhere to go.
     pub disclosure: StyleSpec,
+    /// The `"key"` of a JSON object: the half a reader scans for.
+    pub json_key: StyleSpec,
+    /// A quoted string value in JSON.
+    pub json_string: StyleSpec,
+    /// A number in JSON.
+    pub json_number: StyleSpec,
+    /// `true`, `false` and `null` in JSON.
+    pub json_literal: StyleSpec,
     /// The link the cursor is standing on.
     pub hovered_link: StyleSpec,
     pub status: StatusStyle,
@@ -111,6 +120,9 @@ pub struct Behavior {
     pub max_stylesheets: usize,
     /// Show how long the page took to fetch on the right of the status line.
     pub show_load_time: bool,
+    /// Show how big the page was, on the right of the status line next to the
+    /// time: bytes below a kilobyte, then kB and MB.
+    pub show_size: bool,
 }
 
 impl Default for Behavior {
@@ -133,6 +145,7 @@ impl Default for Behavior {
             yank_to_clipboard: true,
             max_stylesheets: 4,
             show_load_time: true,
+            show_size: true,
         }
     }
 }

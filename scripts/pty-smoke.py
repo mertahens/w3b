@@ -94,6 +94,23 @@ def serve() -> tuple[HTTPServer, int]:
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b[>=<!]|\x1b[=>]")
 
 
+def mouse(fd: int, button: int, row: int, column: int, released: bool = False) -> None:
+    """One SGR mouse event. The terminal counts cells from 1 in the top left corner,
+    and a drag is sent as a press with the motion bit (32) set in the button code."""
+    os.write(fd, f"\x1b[<{button};{column};{row}{'m' if released else 'M'}".encode())
+    time.sleep(0.04)
+
+
+def drag(fd: int, row: int, column: int, cells: int) -> None:
+    """Press the left button on one cell, drag it sideways over `cells` of them, and
+    let go - the way selecting text with a mouse reaches a terminal."""
+    mouse(fd, 0, row, column)
+    for offset in range(1, cells):
+        mouse(fd, 32, row, column + offset)
+    mouse(fd, 0, row, column + cells - 1, released=True)
+
+
+
 def main() -> int:
     binary = sys.argv[1] if len(sys.argv) > 1 else "target/release/w3b"
     if not os.path.isabs(binary):
@@ -107,6 +124,12 @@ def main() -> int:
     image = f"http://127.0.0.1:{port}/img/logo.png"
     YANKED = f"yanked: {image}".encode()
     CLIPBOARD = b"\x1b]52;c;" + base64.b64encode(image.encode()) + b"\x1b\\"
+    # Dragging the mouse over the line under that label marks it: the mark is counted
+    # on the status line, and `y` then takes the marked words rather than the picture's
+    # address the cursor's line still holds.
+    MARK = "MEDIA-BELOW"
+    SELECTED = re.compile(rb"\d+ selected")
+    CLIPBOARD_MARK = b"\x1b]52;c;" + base64.b64encode(MARK.encode()) + b"\x1b\\"
 
     pid, fd = pty.fork()
     if pid == 0:  # child
@@ -175,6 +198,14 @@ def main() -> int:
             os.write(fd, b"y")
         elif stage == 5 and YANKED in plain:
             stage = 6
+            # Mark the line with the mouse: press, a run of drags, release - and the
+            # terminal counts its cells from 1, with a column of page padding in front.
+            drag(fd, row=3, column=2, cells=len(MARK))
+        elif stage == 6 and SELECTED.search(plain):
+            stage = 7
+            os.write(fd, b"y")
+        elif stage == 7 and CLIPBOARD_MARK in transcript:
+            stage = 8
             os.write(fd, b"q")
             quit_sent = True
         if quit_sent:
@@ -289,6 +320,20 @@ def main() -> int:
         problems.append("no OSC 52 clipboard request carrying the image address was written")
     if stage < 6:
         problems.append(f"the image label was never yanked (stages reached: {stage})")
+    # Dragging the left button marks what it passed over: the status line counts the
+    # mark while it is open, and `y` then takes the marked words rather than the
+    # picture's address the cursor's own line still holds. What reaches the screen is a
+        # diff of only the cells that changed, so the count and the note are matched loosely
+    # - a word can be split by whatever else moved. The clipboard request is one whole
+    # write, so it is the check that says exactly which text was taken.
+    if not SELECTED.search(plain):
+        problems.append("dragging the mouse never marked anything (no '… selected' note)")
+    if b"characters" not in plain:
+        problems.append("taking a mark never said how many characters it was")
+    if CLIPBOARD_MARK not in raw:
+        problems.append(f"no clipboard request carrying exactly {MARK!r} was written")
+    if stage < 8:
+        problems.append(f"the dragged text was never yanked (stages reached: {stage})")
     if LAST["path"] == "/":
         problems.append("Enter on a link never issued a request")
     if stuck:
@@ -307,7 +352,7 @@ def main() -> int:
         print(plain.decode("utf-8", "replace")[-2000:])
         return 1
     print("PTY SMOKE OK: alt screen entered and restored, page rendered, link followed, "
-          "form submitted, image address yanked, quit clean")
+          "form submitted, image address yanked, dragged text marked and yanked, quit clean")
     return 0
 
 

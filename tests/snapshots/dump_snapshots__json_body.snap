@@ -1,0 +1,18 @@
+---
+source: tests/dump_snapshots.rs
+expression: "render_json(json, 34)"
+---
+   1 {
+   2   "name": "w3b",
+   3   "stars": 100,
+   4   "tags": [
+   5     "tui",
+   6     "no js"
+   7   ],
+   8   "meta": {
+   9     "made": true,
+  10     "owner": null
+  11   },
+  12   "links": [],
+  13   "note": "a value long enough that it has to wrap"
+  14 }

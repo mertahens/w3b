@@ -1,0 +1,6 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(html, 40)"
+---
+the film: [video: the talk] and [audio:
+jingle.mp3] over the intro

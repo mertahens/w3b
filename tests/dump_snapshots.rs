@@ -1,6 +1,6 @@
 //! Layout regressions: HTML in, plain text out. Snapshots make any change in
 //! the flow/wrapping rules visible immediately.
-use w3b::dump::{render_html, render_html_css};
+use w3b::dump::{render_html, render_html_css, render_json};
 
 fn show(html: &str, width: usize) -> String {
     render_html(html, width)
@@ -166,4 +166,10 @@ fn media_that_cannot_be_played_is_labelled_in_its_place() {
 fn a_selector_that_matches_nothing_changes_nothing() {
     let html = "<p>one</p><p>two</p>";
     assert_eq!(render_html_css(html, ".missing { display: none }", 20), render_html(html, 20));
+}
+
+#[test]
+fn a_json_body_is_laid_out_by_its_nesting() {
+    let json = r#"{"name":"w3b","stars":100,"tags":["tui","no js"],"meta":{"made":true,"owner":null},"links":[],"note":"a value long enough that it has to wrap"}"#;
+    insta::assert_snapshot!("json_body", render_json(json, 34));
 }

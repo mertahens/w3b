@@ -62,6 +62,20 @@ bg = "#141414"
 [style.disclosure]
 underline = true
 
+# The parts of a JSON body, painted over the monospace slab. Braces, commas and
+# colons are structure rather than content and take [style.muted].
+[style.json_key]
+fg = "light_blue"
+
+[style.json_string]
+fg = "green"
+
+[style.json_number]
+fg = "yellow"
+
+[style.json_literal]
+fg = "light_cyan"
+
 # Image placeholders, labelled with whatever the image says about itself.
 [style.image]
 fg = "black"
@@ -91,8 +105,16 @@ fg = "black"
 bold = true
 
 # --- search / prompts -----------------------------------------------------
+# A search hit: a grey band with dark glyphs, so a hit reads as a mark on the
+# page rather than as a link or as selected text.
 [style.search_match]
-bg = "yellow"
+bg = "gray"
+fg = "black"
+
+# Text marked with v or V, or with the mouse, waiting for y. A band of light on dark glyphs: brighter
+# than a search hit, so the mark reads as "this is what y will take".
+[style.selection]
+bg = "light_gray"
 fg = "black"
 
 [style.prompt]
@@ -180,3 +202,5 @@ yank_to_clipboard = true
 max_stylesheets = 4
 # Show how long the page took to fetch, on the right of the status line.
 show_load_time = true
+# Show how big the body was, next to the time: `412 B`, `18.2 kB`, `1.4 MB`.
+show_size = true

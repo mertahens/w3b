@@ -1,0 +1,9 @@
+---
+source: tests/dump_snapshots.rs
+expression: "show(closed, 30)"
+---
+up
+
+  + Anything
+
+down

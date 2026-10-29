@@ -2,7 +2,7 @@
 //! terminal buffer, including the status line and the styles.
 mod common;
 
-use common::{fake_app, fixture, key, loading_app, press, type_str};
+use common::{cell_of, drag, fake_app, fixture, key, loading_app, page_cell, press, type_str};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyCode;
@@ -79,6 +79,38 @@ fn the_load_time_sits_on_the_right_of_the_status_line() {
     quiet.config.behavior.show_load_time = false;
     let status = draw(&quiet, 60, 8).lines().last().unwrap_or_default().to_string();
     assert!(!status.contains("ms"), "{status}");
+}
+
+#[test]
+fn the_size_of_the_page_sits_next_to_the_load_time() {
+    let app = fake_app(FakeFetcher::new().with_html(HOME, 200, "<h1>hi</h1>"), HOME, 60, 8);
+    assert_eq!(app.size_text().as_deref(), Some("11 B"), "the body as it was sent, not as it is drawn");
+    let status = draw(&app, 60, 8).lines().last().unwrap_or_default().to_string();
+    assert!(status.contains("ms"), "{status}");
+    assert!(status.contains("11 B"), "the size sits by the time: {status}");
+    assert!(status.trim_end().ends_with('%'), "percent stays rightmost: {status}");
+
+    // Past a kilobyte the count gets the same one decimal treatment.
+    let body = format!("<p>{}</p>", "x".repeat(2000));
+    let big = fake_app(FakeFetcher::new().with_html(HOME, 200, &body), HOME, 60, 8);
+    assert_eq!(big.size_text().as_deref(), Some("2.0 kB"));
+
+    // A page that never came over the wire has no size to say.
+    let broken =
+        fake_app(FakeFetcher::new().with_error(HOME, w3b::error::NetError::Tls, "bad cert"), HOME, 60, 8);
+    assert_eq!(broken.size_text(), None, "nothing was fetched");
+    let status = draw(&broken, 60, 8).lines().last().unwrap_or_default().to_string();
+    assert!(
+        status.ends_with('%') || status.trim_end().ends_with('%'),
+        "the percent still sits there: {status}"
+    );
+
+    // Switched off, it is gone and the time keeps its place.
+    let mut quiet = fake_app(FakeFetcher::new().with_html(HOME, 200, "<h1>hi</h1>"), HOME, 60, 8);
+    quiet.config.behavior.show_size = false;
+    let status = draw(&quiet, 60, 8).lines().last().unwrap_or_default().to_string();
+    assert!(!status.contains("11 B"), "{status}");
+    assert!(status.contains("ms"), "{status}");
 }
 
 #[test]
@@ -165,10 +197,90 @@ fn prompt_line_appears_while_typing_a_url() {
 }
 
 #[test]
+fn a_mark_is_painted_over_the_cells_it_covers() {
+    let mut app =
+        with_time(fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 62, 16));
+    let (row, col) = page_cell(&app, "bold");
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Char('l'));
+    }
+    let buf = draw_buffer(&app, 62, 16);
+    let pad = app.padding_x();
+    let y = (row - app.view.scroll) as u16;
+    let bg = |column: usize| buf.cell((column as u16, y)).expect("cell").style().bg;
+    let plain = |c: Option<Color>| c.filter(|c| *c != Color::Reset);
+    for column in col..col + 3 {
+        assert_eq!(bg(pad + column), app.theme.selection.bg, "the cell {column} is marked");
+    }
+    assert_eq!(bg(pad + col + 3), app.theme.cursor.bg, "the cursor's own cell keeps the cursor's colours");
+    assert_eq!(plain(bg(pad + col + 4)), plain(app.theme.cursor_line.bg), "nothing past the mark is");
+}
+
+#[test]
+fn a_mark_over_code_is_painted_over_the_slab() {
+    let mut app =
+        with_time(fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 62, 16));
+    let (row, col) = page_cell(&app, "println");
+    let pad = app.padding_x();
+    let slab = app.theme.monospace.bg;
+    assert_eq!(
+        draw_buffer(&app, 62, 16).cell(((pad + col) as u16, row as u16)).expect("cell").style().bg,
+        slab,
+        "the code sits on its slab before anything is marked"
+    );
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Char('l'));
+    }
+    let buf = draw_buffer(&app, 62, 16);
+    let y = (row - app.view.scroll) as u16;
+    assert_eq!(
+        buf.cell(((pad + col) as u16, y)).expect("cell").style().bg,
+        app.theme.selection.bg,
+        "the mark is legible on code too"
+    );
+}
+
+#[test]
+fn dragging_the_mouse_marks_the_cells_it_passed_over() {
+    let mut app =
+        with_time(fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 62, 16));
+    let here = cell_of(&app, "Design notes");
+    drag(&mut app, here, (here.0, here.1 + 3));
+    let buf = draw_buffer(&app, 62, 16);
+    for column in here.1..here.1 + 3 {
+        assert_eq!(
+            buf.cell((column as u16, here.0 as u16)).expect("cell").style().bg,
+            app.theme.selection.bg
+        );
+    }
+}
+
+#[test]
+fn the_status_line_says_what_is_marked_and_what_was_taken() {
+    let mut app =
+        with_time(fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 62, 16));
+    let (row, col) = page_cell(&app, "Design");
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Char('l'));
+    }
+    let status = draw(&app, 62, 16).lines().last().unwrap_or_default().to_string();
+    assert!(status.contains("4 selected"), "the mark is counted before it is taken: {status}");
+    press(&mut app, KeyCode::Char('y'));
+    let status = draw(&app, 62, 16).lines().last().unwrap_or_default().to_string();
+    assert!(status.contains("yanked 4 characters"), "{status}");
+}
+
+#[test]
 fn help_overlay_covers_the_page() {
     let mut app =
         with_time(fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 60, 20));
-    app.handle_key(key(KeyCode::Char('i')));
+    app.handle_key(key(KeyCode::Char('?')));
     let screen = draw(&app, 60, 20);
     insta::assert_snapshot!("help", screen);
     assert!(screen.contains("w3b"), "{screen}");
@@ -300,7 +412,14 @@ fn search_matches_are_highlighted() {
     let buf = terminal.backend().buffer();
     let x = (9 + app.padding_x()) as u16;
     assert_eq!(buf.cell((x, 0)).expect("n").symbol(), "n");
-    assert_eq!(buf.cell((x, 0)).unwrap().style().bg, app.theme.search_match.bg, "hit is highlighted");
+    // The cursor sits on the first hit, so that one cell wears the cursor style and
+    // the rest of the hit shows the band.
+    assert_eq!(buf.cell((x + 1, 0)).unwrap().style().bg, app.theme.search_match.bg, "hit is highlighted");
+    assert_eq!(
+        (app.theme.search_match.bg, app.theme.search_match.fg),
+        (Some(Color::Gray), Some(Color::Black)),
+        "a hit is a grey band with dark glyphs, not a shout of yellow"
+    );
 }
 
 #[test]
@@ -644,5 +763,166 @@ fn a_linked_heading_keeps_its_colour_and_gains_the_underline() {
         buf.cell((pad, 2)).expect("cell").style().fg,
         app.theme.link.fg,
         "a word link is link-coloured"
+    );
+}
+
+/// The info pane: the numbers a page has a right to be curious about, taken from a
+/// fixture that asks for far more than w3b goes and gets.
+#[test]
+fn the_info_pane_says_what_the_page_asked_for() {
+    let html = "<title>many</title><link rel=stylesheet href=/a.css><link rel=stylesheet href=/b.css>\
+        <link rel=icon href=/f.ico><script src=/a.js></script><script>inline()</script>\
+        <iframe src=/fr></iframe><svg></svg><canvas></canvas>\
+        <p><img src=/1.png alt=one><img src=/2.png alt=''><video src=/v.mp4 title=v></p>";
+    let app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 70, 24);
+
+    // The page asked for two sheets and w3b read both of them; everything else it
+    // counted and left where it was.
+    let joined = render::info_lines(&app).join("\n");
+    for needle in [
+        "200 OK",
+        "297 B",
+        "2 of 2 stylesheets",
+        "2 images",
+        "1 video/audio",
+        "2 scripts",
+        "1 frame",
+        "2 svg/canvas/markup",
+        "1 other link",
+        "2 media labels",
+    ] {
+        assert!(joined.contains(needle), "{needle} missing from:\n{joined}");
+    }
+
+    // The clock: the pane's total is the number the status line shows, and the
+    // parts are inside it rather than alongside it.
+    let timings = app.page.timings.expect("a fetched page is timed");
+    assert_eq!(timings.total, app.page.load_ms.expect("the same span"), "one clock, two places");
+    assert!(
+        timings.fetch + timings.css + timings.parse + timings.layout <= timings.total,
+        "the parts fit inside the whole: {timings:?}"
+    );
+
+    // The pane itself, on screen, opened by `i`.
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 70, 24);
+    press(&mut app, KeyCode::Char('i'));
+    assert!(matches!(app.mode, w3b::Mode::Info), "`i` opens the info pane");
+    let screen = draw(&with_time(app), 70, 24);
+    insta::assert_snapshot!("info", screen);
+    assert!(screen.contains("page info"), "the pane is titled");
+    assert!(screen.contains("left"), "...and lists what was left out");
+}
+
+#[test]
+fn the_parts_of_a_json_body_take_their_own_colours() {
+    let json = r#"{"name":"w3b","stars":100,"on":true,"todo":[]}"#;
+    let mut app = fake_app(FakeFetcher::new().with_type(HOME, 200, "application/json", json), HOME, 40, 8);
+    app.view.cursor.row = 0;
+    let buf = draw_buffer(&app, 40, 8);
+    let text = buffer_text(&buf);
+    assert!(text.contains("\"name\": \"w3b\""), "{text:?}");
+    assert!(text.contains("100") && text.contains("true"), "{text:?}");
+    // Count the cells carrying each part colour: keys, strings, numbers and the
+    // three literals all read differently, and the structure sits back in muted.
+    let painted = |fg: Option<Color>| {
+        (0..8u16)
+            .flat_map(|r| (0..40u16).map(move |c| (c, r)))
+            .filter(|&(c, r)| fg.is_some() && buf.cell((c, r)).expect("cell").style().fg == fg)
+            .count()
+    };
+    for style in [
+        app.theme.json_key.fg,
+        app.theme.json_string.fg,
+        app.theme.json_number.fg,
+        app.theme.json_literal.fg,
+        app.theme.muted.fg,
+    ] {
+        assert!(painted(style) > 0, "some cell carries {style:?}");
+    }
+    assert_ne!(app.theme.json_key.fg, app.theme.json_string.fg, "the shipped theme tells a key from a value");
+    // The monospace slab is the shape of the body: the text of every part of it is
+    // painted on that dark background.
+    let slab = app.theme.monospace.bg;
+    let on_slab = (0..8u16)
+        .flat_map(|r| (0..40u16).map(move |c| (c, r)))
+        .filter(|&(c, r)| buf.cell((c, r)).expect("cell").style().bg == slab)
+        .count();
+    assert!(on_slab > 10, "the body sits on the monospace slab, not on plain text");
+}
+
+#[test]
+fn a_direct_view_of_a_file_is_monospace_across_the_whole_line() {
+    let json = "{\"name\":\"w3b\",\"stars\":100}";
+    let mut app = fake_app(FakeFetcher::new().with_type(HOME, 200, "application/json", json), HOME, 60, 12);
+    app.view.cursor.row = 3;
+    let buf = draw_buffer(&app, 60, 12);
+    let slab = app.theme.monospace.bg;
+    let pad = app.padding_x() as u16;
+    let open = (0..60u16)
+        .find(|c| buf.cell((*c, 0)).expect("cell").symbol() == "{")
+        .expect("the body starts on the first row");
+    assert!(open >= pad, "and not in the page padding");
+    // The line number sits in front of the body: the cell before `{` is the gutter's
+    // space, and the digit is before that.
+    assert_eq!(buf.cell((open - 1, 0)).expect("cell").symbol(), " ", "the gutter ends in a space");
+    assert_eq!(buf.cell((open - 2, 0)).expect("cell").symbol(), "1", "and says which line this is");
+    assert_eq!(
+        buf.cell((open - 2, 0)).expect("cell").style().fg,
+        app.theme.muted.fg,
+        "the number is furniture: the slab says the text is monospace, not what it is"
+    );
+    // A file is only its own text, so the slab is not the outline of the glyphs but
+    // the whole text area: it reaches the last column of the row, long past the `}`.
+    assert_eq!(
+        buf.cell((60 - pad - 3, 0)).expect("cell").style().bg,
+        slab,
+        "the line is on the slab to the end of the text area"
+    );
+    // The page padding on either side is not part of it.
+    assert_eq!(buf.cell((0, 0)).expect("cell").style().bg, Some(Color::Reset), "not the left margin");
+    assert_eq!(buf.cell((59, 0)).expect("cell").style().bg, Some(Color::Reset), "not the right margin");
+    // A search hit inside that wall of monospace text still gets its grey band: the
+    // slab goes under the mark instead of over it. The cursor sits on the first cell
+    // of the hit, so it is the second cell that carries the band.
+    app.handle_key(key(KeyCode::Char('/')));
+    type_str(&mut app, "w3b");
+    app.handle_key(key(KeyCode::Enter));
+    let buf = draw_buffer(&app, 60, 12);
+    let (row, hits) = app.matches.iter().next().expect("a match");
+    let start = hits[0].0;
+    let cell = buf.cell(((app.padding_x() + start + 1) as u16, *row as u16)).expect("hit cell");
+    assert_eq!(cell.style().bg, app.theme.search_match.bg, "a hit keeps its background");
+    assert_eq!(cell.style().fg, app.theme.search_match.fg, "and its glyphs stay dark");
+}
+
+#[test]
+fn any_body_read_as_a_file_gets_the_slab_across_the_row() {
+    // Not only JSON: a text/plain or text/css body is the file itself as well.
+    let body = "short line\nthe second line is longer than the first one by a fair bit";
+    let app = fake_app(FakeFetcher::new().with_type(HOME, 200, "text/plain", body), HOME, 60, 12);
+    let buf = draw_buffer(&app, 60, 12);
+    let slab = app.theme.monospace.bg;
+    assert!(app.page.file_view, "the page knows it is a file and not a page");
+    assert_eq!(
+        buf.cell((60 - app.padding_x() as u16 - 3, 1)).expect("cell").style().bg,
+        slab,
+        "a short line is still monospace to the end of the row"
+    );
+}
+
+#[test]
+fn code_inside_a_page_is_only_slabbed_where_the_code_is() {
+    // The other half of the same rule: in a page made of prose the slab stays around
+    // the code, so the words either side of it keep the page background.
+    let html = "<p>plain <code>ls -l</code> again</p>";
+    let mut app = fake_app(FakeFetcher::new().with_html(HOME, 200, html), HOME, 60, 12);
+    app.view.cursor.row = 3;
+    let buf = draw_buffer(&app, 60, 12);
+    let pad = app.padding_x() as u16;
+    assert_eq!(buf.cell((pad, 0)).expect("cell").style().bg, Some(Color::Reset), "plain words are not");
+    assert_eq!(
+        buf.cell((60 - pad - 3, 0)).expect("cell").style().bg,
+        Some(Color::Reset),
+        "nor is the end of the row"
     );
 }

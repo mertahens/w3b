@@ -37,10 +37,18 @@ impl Fetched {
         match ct.as_str() {
             "text/html" | "application/xhtml+xml" => Kind::Html,
             "text/plain" => Kind::Text,
+            "application/json" | "text/json" => Kind::Json,
+            // `application/ld+json`, `application/geo+json`, `application/manifest+json`:
+            // structured data with a base type written in front of the `+`.
+            other if other.ends_with("+json") => Kind::Json,
             other if other.starts_with("text/") => Kind::Text,
             "image/png" | "image/jpeg" | "image/gif" => Kind::Image,
             "application/pdf" => Kind::Pdf,
             "text/css" => Kind::Css,
+            // A server that calls JSON `application/octet-stream` is common enough
+            // that the bytes get a look before w3b calls the body binary. The scan
+            // gives up on the first character, so a real download costs nothing.
+            "application/octet-stream" if json_body(&self.bytes) => Kind::Json,
             _ => Kind::Binary,
         }
     }
@@ -50,10 +58,17 @@ impl Fetched {
 pub enum Kind {
     Html,
     Text,
+    /// Structured data: laid out by nesting and coloured by part.
+    Json,
     Image,
     Pdf,
     Css,
     Binary,
+}
+
+/// Whether the bytes read as one JSON value.
+fn json_body(bytes: &[u8]) -> bool {
+    matches!(std::str::from_utf8(bytes), Ok(text) if crate::json::is_json(text))
 }
 
 pub fn is_supported_scheme(url: &str) -> bool {
@@ -189,13 +204,19 @@ impl FakeFetcher {
     }
 
     /// Register a response. `status` is the HTTP status the body is served with.
-    pub fn with_html(mut self, url: &str, status: u16, body: &str) -> FakeFetcher {
+    pub fn with_html(self, url: &str, status: u16, body: &str) -> FakeFetcher {
+        self.with_type(url, status, "text/html; charset=utf-8", body)
+    }
+
+    /// Register a response served under a chosen content type, so a test can be
+    /// handed JSON or css rather than only html.
+    pub fn with_type(mut self, url: &str, status: u16, content_type: &str, body: &str) -> FakeFetcher {
         self.responses.insert(
             url.to_string(),
             FakeReply::Page(Fetched {
                 status,
                 url: url.to_string(),
-                content_type: Some("text/html; charset=utf-8".to_string()),
+                content_type: Some(content_type.to_string()),
                 bytes: body.as_bytes().to_vec(),
             }),
         );
