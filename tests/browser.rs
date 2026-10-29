@@ -482,7 +482,11 @@ fn v_marks_text_and_the_cursor_keys_move_its_far_end() {
     app.move_cursor_to((row, col));
     press(&mut app, KeyCode::Char('v'));
     assert_eq!(app.mode, Mode::Visual);
-    assert_eq!(app.view.visual, Some(w3b::app::Anchor { row, col, linewise: false }));
+    assert_eq!(
+        app.view.visual,
+        Some(w3b::app::Anchor { row, col, linewise: false, far: None }),
+        "the press is one end and the cursor the other"
+    );
     for _ in 0..3 {
         press(&mut app, KeyCode::Right);
     }
@@ -509,21 +513,90 @@ fn capital_v_takes_whole_lines() {
 #[test]
 fn v_and_capital_v_switch_between_characters_and_whole_lines() {
     let mut app = fake_app(home_fetcher(), HOME, 70, 24);
-    let linewise =
-        |app: &w3b::App| app.view.visual.map_or("none", |a| if a.linewise { "lines" } else { "chars" });
+    let mark = |app: &w3b::App| match app.view.visual {
+        None => "none".to_string(),
+        Some(a) => format!(
+            "{} {}",
+            if a.linewise { "lines" } else { "chars" },
+            if a.far.is_some() { "standing" } else { "travelling" }
+        ),
+    };
     press(&mut app, KeyCode::Char('v'));
-    assert_eq!(linewise(&app), "chars");
+    assert_eq!(mark(&app), "chars travelling");
     press(&mut app, KeyCode::Char('V'));
-    assert_eq!(linewise(&app), "lines", "the same key pair as vim");
+    assert_eq!(mark(&app), "lines travelling", "the same key pair as vim");
     press(&mut app, KeyCode::Char('v'));
-    assert_eq!(linewise(&app), "chars");
+    assert_eq!(mark(&app), "chars travelling");
+    // The other key of the pair is only ever about what is taken, so it cannot lose
+    // the mark: it switches kind and leaves the two ends where they are.
+    press(&mut app, KeyCode::Char('V'));
+    assert_eq!(mark(&app), "lines travelling");
     press(&mut app, KeyCode::Char('v'));
-    assert_eq!(linewise(&app), "none", "the key that opened the mark closes it");
+    assert_eq!(mark(&app), "chars travelling");
+    // The same key is the one that stands the mark up and picks it back down.
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(mark(&app), "chars standing");
+    press(&mut app, KeyCode::Char('V'));
+    assert_eq!(mark(&app), "lines standing", "and the pair still switches kind");
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(mark(&app), "chars standing");
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(mark(&app), "chars travelling", "the same key picks the mark back up");
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(mark(&app), "chars standing");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(mark(&app), "none", "Esc is what drops a mark for good");
+}
+
+#[test]
+fn v_a_second_time_leaves_the_mark_on_the_page() {
+    let mut app = fake_app(home_fetcher(), HOME, 70, 24);
+    let (row, col) = page_cell(&app, "bold");
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Char('l'));
+    }
+    assert_eq!(app.selected_text().as_deref(), Some("bold"));
+
+    // The second `v` is done marking: the cursor is free again, and the mark keeps the
+    // end it had reached rather than going away with it.
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.mode, Mode::Normal, "the cursor is free");
+    assert!(app.marked(), "the selection stays there");
+    assert_eq!(app.selected_text().as_deref(), Some("bold"), "still the same four cells");
+    assert_eq!(app.visual_status().as_deref(), Some("4 selected"));
+
+    // The cursor goes off on its own and the mark does not follow it.
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Char('j'));
+    }
+    assert_eq!(app.view.cursor.row, row + 5, "and it really did go");
+    assert_eq!(app.selected_text().as_deref(), Some("bold"), "where it was is where it stays");
+
+    // Still the mark, and not the line the cursor has stopped on, that y takes.
+    assert_eq!(press(&mut app, KeyCode::Char('y')), w3b::Action::Yank("bold".to_string()));
+
+    // And the keys the mark held while it travelled are released with it: the pane is
+    // not a reason to lose it either.
+    press(&mut app, KeyCode::Char('?'));
+    assert_eq!(app.mode, Mode::Help, "a standing mark does not hold the page keys");
+    press(&mut app, KeyCode::Char('x'));
     assert_eq!(app.mode, Mode::Normal);
-    press(&mut app, KeyCode::Char('V'));
-    assert_eq!(linewise(&app), "lines");
-    press(&mut app, KeyCode::Char('V'));
-    assert_eq!(linewise(&app), "none");
+    assert_eq!(app.selected_text().as_deref(), Some("bold"), "the pane gave it back");
+
+    // `v` picks it up again: the far end is the cursor, wherever the cursor has got to.
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.mode, Mode::Visual);
+    assert_eq!(app.view.visual.map(|a| a.far), Some(None));
+    assert_eq!(app.visual_ends(), Some((row, col, row + 5, app.view.cursor.col)));
+
+    // Esc drops a standing mark as well, which is how y gets back to the cursor.
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.marked());
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(matches!(press(&mut app, KeyCode::Char('y')), w3b::Action::Yank(url) if url == HOME));
 }
 
 #[test]

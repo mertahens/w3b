@@ -124,8 +124,12 @@ fg = "default"
 fg = "cyan"
 
 # --- status line ----------------------------------------------------------
+# `fg` here is every word the bar writes itself - the address or title, the mark
+# count, the message, the time and the percentage - so it is bright grey on the
+# dark bar. Each badge below brings its own ink and background, which is what
+# makes it stand out, so `fg` here does not touch it.
 [style.status]
-fg = "black"
+fg = "gray"
 bg = "dark_gray"
 
 [style.status.loading]
@@ -175,6 +179,16 @@ fg = "dark_gray"
 
 [style.border]
 fg = "dark_gray"
+
+# What floats over the page - the help pane, the page info pane and the `g` menu.
+# No `bg`: the words sit on the terminal's own background rather than on a slab,
+# and `gray` is a step brighter than the page's `dark_gray` rules. `light_gray` is
+# brighter again and vanishes on a light terminal.
+[style.pane]
+fg = "gray"
+
+[style.pane_border]
+fg = "gray"
 
 [behavior]
 home_url = "https://example.com"

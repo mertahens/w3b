@@ -54,7 +54,8 @@ pub enum Mode {
     /// Typing into a form field. `App::editing` says which one.
     Field,
     /// Text is being marked with `v` or `V`. The cursor is one end of the mark and
-    /// `View::visual` holds the other.
+    /// `View::visual` holds the other. A mark can also be left standing - it stays on
+    /// the page from Normal mode, with `View::visual` holding both ends.
     Visual,
 }
 
@@ -78,18 +79,26 @@ pub struct View {
     /// the wheel moves the window and leaves the cursor on its line.
     pub scroll: usize,
     pub hscroll: usize,
-    /// The far end of a visual selection, if one is open. The cursor is the other end,
-    /// exactly as in vim: move past the anchor and the two simply swap places.
+    /// What is marked on the page, if anything. The cursor is the far end while the
+    /// mark travels with it, exactly as in vim: move past the anchor and the two
+    /// simply swap places. `Anchor::far` says where the far end was left once the
+    /// mark has been left standing.
     pub visual: Option<Anchor>,
 }
 
-/// The far end of a visual selection.
+/// The marked stretch of text, from its anchor to its far end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Anchor {
+    /// The end the mark was opened at: where `v` was pressed, or where the button
+    /// went down.
     pub row: usize,
     pub col: usize,
     /// `V` takes whole lines, end to end, whatever column the anchor stands on.
     pub linewise: bool,
+    /// The other end of a mark that stands still: `Some` once `v` has been pressed
+    /// again to leave the mark on the page with the cursor free, `None` while the
+    /// cursor is that other end and drags it along.
+    pub far: Option<(usize, usize)>,
 }
 
 impl View {
@@ -957,23 +966,50 @@ impl App {
         }
     }
 
-    /// `v` and `V`: start marking text, or stop. The anchor is where the cursor stands
-    /// when marking starts and the cursor is the other end; the same key again stops
-    /// marking, the other one switches between characters and whole lines, so the pair
-    /// behaves as it does in vim.
+    /// `v` and `V`. The first press opens the mark at the cursor: the cursor is one
+    /// end, the press the other, and the two travel together. The same key again
+    /// leaves the mark standing - the band stays on the page and `y` still takes it,
+    /// while the cursor goes off on its own - and the same key once more picks it up,
+    /// the far end coming back to wherever the cursor has got to. The other key of
+    /// the pair only switches between characters and whole lines, as it does in vim.
     pub fn toggle_visual(&mut self, linewise: bool) {
-        match self.view.visual {
-            None => {
-                let here = self.view.cursor;
-                self.view.visual = Some(Anchor { row: here.row, col: here.col, linewise });
-                self.mode = Mode::Visual;
+        let here = (self.view.cursor.row, self.view.cursor.col);
+        let Some(mut anchor) = self.view.visual else {
+            self.view.visual = Some(Anchor { row: here.0, col: here.1, linewise, far: None });
+            self.mode = Mode::Visual;
+            return;
+        };
+        match (anchor.far, anchor.linewise == linewise) {
+            // The key that opened the mark, while it travels: take it off the cursor
+            // and leave the mark standing where it got to.
+            (None, true) => {
+                anchor.far = Some(here);
+                self.show_message("the mark stands: v picks it up, Esc drops it", false);
             }
-            Some(anchor) if anchor.linewise != linewise => {
-                self.view.visual = Some(Anchor { linewise, ..anchor });
-                self.mode = Mode::Visual;
+            // The same key again: the mark travels with the cursor once more, the far
+            // end back where the cursor is now.
+            (Some(_), true) => {
+                anchor.far = None;
+                self.show_message("the mark travels with the cursor again", false);
             }
-            Some(_) => self.leave_visual(),
+            // The other key: characters become whole lines or the other way round,
+            // and the two ends - travelling or standing - are left as they are.
+            _ => anchor.linewise = linewise,
         }
+        self.view.visual = Some(anchor);
+        self.mode = if self.mark_travels() { Mode::Visual } else { Mode::Normal };
+    }
+
+    /// True while anything is marked, travelling or standing: what `y` would take.
+    pub fn marked(&self) -> bool {
+        self.view.visual.is_some()
+    }
+
+    /// True while the mark is open and its far end travels with the cursor - which is
+    /// what `Mode::Visual` says as well. A mark left standing is not this: the cursor
+    /// is free again, and so are the keys that would leave the page.
+    pub fn mark_travels(&self) -> bool {
+        self.view.visual.is_some_and(|a| a.far.is_none())
     }
 
     /// Stop marking. A selection is a position on the page, so it does not outlive the
@@ -995,11 +1031,11 @@ impl App {
 
     /// A drag: the press is one end of a character-wise mark and the cell under the
     /// pointer is the other. Dragging takes over any mark that was open, the way a
-    /// fresh drag does everywhere else.
+    /// fresh drag does everywhere else, and takes it back off the cursor too.
     pub fn drag_mouse(&mut self, at: (usize, usize)) {
         let Some(press) = self.mouse_press else { return };
         self.leave_field();
-        self.view.visual = Some(Anchor { row: press.0, col: press.1, linewise: false });
+        self.view.visual = Some(Anchor { row: press.0, col: press.1, linewise: false, far: None });
         self.mode = Mode::Visual;
         self.move_cursor_to(at);
     }
@@ -1019,9 +1055,10 @@ impl App {
         }
     }
 
-    /// Coming back from a prompt or a search: back to marking if text is marked.
+    /// Coming back from a prompt or a search: back to dragging the mark if the mark
+    /// travels with the cursor, and to ordinary keys if it only stands.
     pub fn back_to_page(&mut self) {
-        self.mode = if self.view.visual.is_some() { Mode::Visual } else { Mode::Normal };
+        self.mode = if self.mark_travels() { Mode::Visual } else { Mode::Normal };
     }
 
     /// The two ends of the selection in reading order: first row and column, then last.
@@ -1029,7 +1066,8 @@ impl App {
         let anchor = self.view.visual?;
         let here = (self.view.cursor.row, self.view.cursor.col);
         let from = (anchor.row, anchor.col);
-        let (first, last) = if from <= here { (from, here) } else { (here, from) };
+        let to = anchor.far.unwrap_or(here);
+        let (first, last) = if from <= to { (from, to) } else { (to, from) };
         Some((first.0, first.1, last.0, last.1))
     }
 

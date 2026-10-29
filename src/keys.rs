@@ -21,7 +21,9 @@ impl App {
             Mode::Open | Mode::Search => self.handle_input_key(key),
             Mode::Field => self.handle_field_key(key),
             Mode::Help | Mode::Info => {
-                self.mode = Mode::Normal;
+                // The pane is done with: back to the page, and to marking if the mark
+                // was still travelling when it was put up.
+                self.back_to_page();
                 Action::None
             }
             Mode::Normal | Mode::Visual => self.handle_normal_key(key),
@@ -31,10 +33,12 @@ impl App {
     fn handle_normal_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let code = key.code;
-        // While text is marked the movement keys drag its far end along with the
-        // cursor; everything that is not a movement, a yank or the marking itself is
-        // something to do once the mark is gone.
-        let visual = self.mode == Mode::Visual;
+        // While the mark travels with the cursor the movement keys drag its far end
+        // along, and everything that is not a movement, a yank or the marking itself is
+        // something to do once the mark is gone. A mark that has been left standing does
+        // none of this: the cursor is free, the keys work, and the band stays put.
+        let visual = self.mark_travels();
+        let marked = self.marked();
         // A `g` is waiting: whatever comes next is a go-to command.
         if self.pending_g {
             self.pending_g = false;
@@ -76,9 +80,9 @@ impl App {
             KeyCode::Char('r') if !visual => self.reload(),
             KeyCode::Backspace | KeyCode::Char('[') if !visual => self.go_back(),
             KeyCode::Char(']') if !visual => self.go_forward(),
-            // `y` takes what is marked when anything is, and what the cursor stands on
-            // - a link, an image, the page - when nothing is.
-            KeyCode::Char('y') => yanked = if visual { self.yank_selection() } else { self.yank_cursor() },
+            // `y` takes what is marked when anything is, marked or standing, and what
+            // the cursor stands on - a link, an image, the page - when nothing is.
+            KeyCode::Char('y') => yanked = if marked { self.yank_selection() } else { self.yank_cursor() },
             KeyCode::Char('v') => self.toggle_visual(false),
             KeyCode::Char('V') => self.toggle_visual(true),
             KeyCode::Char('w') => self.toggle_wrap(),
@@ -88,7 +92,9 @@ impl App {
                 self.pending_g = false;
                 self.input.clear();
                 self.input_pos = 0;
-                if visual {
+                // Esc is the key that asks for nothing: it drops a standing mark too,
+                // which is the only way to get `y` back to the cursor's own target.
+                if marked {
                     self.leave_visual();
                 }
             }
@@ -103,11 +109,12 @@ impl App {
         }
     }
 
-    /// The second half of a `g` command. See `GOTO_MENU`. While text is marked only
+    /// The second half of a `g` command. See `GOTO_MENU`. While the mark travels only
     /// the two jumps within the page are offered: the rest change the page, and a
-    /// mark belongs to the one it was made on.
+    /// mark belongs to the one it was made on. A mark that stands is not held to that;
+    /// a page-changing key drops it, as any other page-changing key does.
     fn handle_goto_key(&mut self, code: KeyCode) -> Action {
-        let page_only = self.mode == Mode::Visual;
+        let page_only = self.mark_travels();
         match code {
             KeyCode::Esc => {
                 self.message = None;

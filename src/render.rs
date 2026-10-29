@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Widget};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -23,9 +24,9 @@ w3b keys  (? toggles this)
   o or :         open url        /           search
   n / N          next/prev hit   Esc         cancel
   [ or Backspace back            ]           forward
-  v V drag       mark text       w           toggle wrap
+  v V drag       mark text       v again     mark stays
   y              what is marked, else link, else page
-  g then ...     go-to menu
+  g then ...     go-to menu      w           toggle wrap
   in a field     typing edits it, Esc leaves it
   Enter there    sends the form, if it asks for a GET
   on a + or -    Enter shows or hides the lines under it
@@ -391,9 +392,10 @@ pub fn render_status(app: &App, area: Rect, buf: &mut Buffer) {
             let style = if msg.error { app.theme.status.error } else { app.theme.message };
             (Cow::Owned(msg.text.clone()), style.patch(bar_style))
         }
-        // Marking text: say how much, because that is what the user wants to know
-        // before pressing y. It outranks the hover hint.
-        None if app.mode == Mode::Visual => {
+        // Marking text - or sitting on a mark that has been left standing: say how
+        // much, because that is what the user wants to know before pressing y. It
+        // outranks the hover hint, and so says at a glance that the mark is still there.
+        None if app.marked() => {
             (Cow::Owned(app.visual_status().unwrap_or_default()), app.theme.message.patch(bar_style))
         }
         // Standing on a link: show where it goes.
@@ -531,15 +533,17 @@ fn render_goto_menu(app: &App, area: Rect, buf: &mut Buffer) {
     let box_area =
         Rect { x: area.x, y: area.y + area.height.saturating_sub(height), width: width as u16, height };
     Clear.render(box_area, buf);
-    Block::bordered().border_style(app.theme.border).title(" go to ").render(box_area, buf);
-    let base = app.theme.status.base;
+    Block::bordered()
+        .border_style(app.theme.pane_border)
+        .title(Span::styled(" go to ", app.theme.pane))
+        .render(box_area, buf);
     for (i, (key, what)) in entries.iter().enumerate() {
         let (row, col) = (i / 2, i % 2);
         let y = box_area.y + 1 + row as u16;
         let x = usize::from(box_area.x) + 2 + col * column;
         let line = Rect { x: x as u16, y, width: (column - 1) as u16, height: 1 };
-        draw(buf, line, 0, key, app.theme.link.patch(base).bold());
-        draw(buf, line, 3, what, app.theme.text.patch(base));
+        draw(buf, line, 0, key, app.theme.link.bold());
+        draw(buf, line, 3, what, app.theme.pane);
     }
 }
 
@@ -550,6 +554,8 @@ fn render_help(area: Rect, buf: &mut Buffer, app: &App) {
 
 /// A bordered pane, centred in the terminal, holding plain text lines: the help
 /// screen and the page info pane are the same box with different words in them.
+/// It floats over the page in the config's pane colours - bright ink, no
+/// background - so the words are the terminal's own background inside a frame.
 fn render_box(app: &App, area: Rect, buf: &mut Buffer, title: &str, lines: &[String]) {
     let height = (lines.len() as u16 + 2).min(area.height);
     let longest = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16 + 4;
@@ -559,10 +565,13 @@ fn render_box(app: &App, area: Rect, buf: &mut Buffer, title: &str, lines: &[Str
     let y = area.y + area.height.saturating_sub(height) / 2;
     let box_area = Rect { x, y, width, height };
     Clear.render(box_area, buf);
-    Block::bordered().border_style(app.theme.border).title(format!(" {title} ")).render(box_area, buf);
+    Block::bordered()
+        .border_style(app.theme.pane_border)
+        .title(Span::styled(format!(" {title} "), app.theme.pane))
+        .render(box_area, buf);
     let inner = Rect { x: x + 1, y: y + 1, width: width.saturating_sub(2), height: height.saturating_sub(2) };
     for (i, text) in lines.iter().enumerate().take(usize::from(inner.height)) {
-        draw_row(buf, inner, i, text, app.theme.text.patch(app.theme.status.base));
+        draw_row(buf, inner, i, text, app.theme.pane);
     }
 }
 

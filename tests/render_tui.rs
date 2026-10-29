@@ -6,6 +6,7 @@ use common::{cell_of, drag, fake_app, fixture, key, loading_app, page_cell, pres
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyCode;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use w3b::render;
@@ -48,6 +49,28 @@ fn buffer_text(buf: &Buffer) -> String {
         out.pop();
     }
     out
+}
+
+/// The frame of the box floating over the page, found from its top-left corner.
+fn box_rect(buf: &Buffer) -> Rect {
+    let area = buf.area;
+    let Some((x, y)) = (area.top()..area.bottom())
+        .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+        .find(|(x, y)| buf.cell((*x, *y)).is_some_and(|c| c.symbol() == "┌"))
+    else {
+        panic!("nothing floats over the page");
+    };
+    let height = (y + 1..area.bottom())
+        .find(|row| buf.cell((x, *row)).is_some_and(|c| c.symbol() == "└"))
+        .unwrap_or(area.bottom() - 1)
+        - y
+        + 1;
+    let width = (x + 1..area.right())
+        .find(|col| buf.cell((*col, y)).is_some_and(|c| c.symbol() == "┐"))
+        .unwrap_or(area.right() - 1)
+        - x
+        + 1;
+    Rect::new(x, y, width, height)
 }
 
 #[test]
@@ -138,6 +161,49 @@ fn the_goto_menu_lists_every_command() {
     }
     // The page is still readable behind a hint menu.
     assert!(screen.contains("Design notes"), "{screen}");
+}
+
+#[test]
+fn what_floats_over_the_page_is_bright_words_with_no_background() {
+    // The help pane, the page info pane and the `g` menu all float over the page,
+    // so they are drawn the same way and are checked the same way.
+    let plain = |c: Option<Color>| c.filter(|c| *c != Color::Reset);
+    for (what, key) in [
+        ("help pane", KeyCode::Char('?')),
+        ("info pane", KeyCode::Char('i')),
+        ("go-to menu", KeyCode::Char('g')),
+    ] {
+        let mut app =
+            fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 62, 24);
+        press(&mut app, key);
+        let buf = draw_buffer(&app, 62, 24);
+        let frame = box_rect(&buf);
+        let inside = |x, y| buf.cell((x, y)).expect("cell").style();
+
+        // Nothing inside the frame carries a background: the box is a window onto
+        // the terminal's own background, not a slab pasted over the page.
+        for y in frame.top()..frame.bottom() {
+            for x in frame.left()..frame.right() {
+                assert_eq!(plain(inside(x, y).bg), None, "{what} paints a background at ({x}, {y})");
+            }
+        }
+        // The rules are a step brighter than the `dark_gray` lines in a table.
+        assert_eq!(inside(frame.left(), frame.top()).fg, Some(Color::Gray), "the {what} frame");
+        // So is everything written inside them. The `g` menu keeps the link colour
+        // for its key, which is the only other ink allowed in a box.
+        let inks: Vec<Option<Color>> = (frame.top()..frame.bottom())
+            .flat_map(|y| (frame.left()..frame.right()).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                buf.cell((*x, *y)).expect("cell").symbol().chars().next().is_some_and(char::is_alphanumeric)
+            })
+            .map(|(x, y)| inside(x, y).fg)
+            .collect();
+        assert!(
+            inks.iter().all(|fg| matches!(fg, Some(Color::Gray) | Some(Color::Blue))),
+            "{what} is not drawn in bright ink: {inks:?}"
+        );
+        assert!(inks.contains(&Some(Color::Gray)), "{what} has no bright words: {inks:?}");
+    }
 }
 
 #[test]
@@ -274,6 +340,65 @@ fn the_status_line_says_what_is_marked_and_what_was_taken() {
     press(&mut app, KeyCode::Char('y'));
     let status = draw(&app, 62, 16).lines().last().unwrap_or_default().to_string();
     assert!(status.contains("yanked 4 characters"), "{status}");
+}
+
+#[test]
+fn a_mark_that_stands_is_still_painted_and_counted() {
+    let mut app =
+        with_time(fake_app(FakeFetcher::new().with_html(HOME, 200, &fixture("article.html")), HOME, 62, 16));
+    let (row, col) = page_cell(&app, "bold");
+    app.move_cursor_to((row, col));
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Char('l'));
+    }
+    // The second `v` frees the cursor; the band is what it was.
+    press(&mut app, KeyCode::Char('v'));
+    for _ in 0..2 {
+        press(&mut app, KeyCode::Char('j'));
+    }
+    let buf = draw_buffer(&app, 62, 16);
+    let pad = app.padding_x();
+    let y = (row - app.view.scroll) as u16;
+    let bg = |column: usize| buf.cell((column as u16, y)).expect("cell").style().bg;
+    for column in col..col + 4 {
+        assert_eq!(bg(pad + column), app.theme.selection.bg, "the cell {column} is still marked");
+    }
+    let status = draw(&app, 62, 16).lines().last().unwrap_or_default().to_string();
+    assert!(status.contains("4 selected"), "the count stays with the mark, not the cursor: {status}");
+}
+
+#[test]
+fn the_status_line_writes_its_own_words_in_bright_grey() {
+    // The bar writes the address or title, the mark count, the message and the
+    // figures on the right in one bright grey on its dark background. A badge is
+    // the other kind of thing on the bar: it brings ink and a background that
+    // only work together, so it keeps both.
+    let app = loading_app(FakeFetcher::new().with_html(HOME, 200, "<h1>hi</h1>"), HOME, 60, 10);
+    let buf = draw_buffer(&app, 60, 10);
+    let row = 9u16;
+    let bar = app.theme.status.base;
+    let badge = app.theme.status.loading;
+
+    let mut words = 0;
+    let mut marks = 0;
+    for x in 0..60u16 {
+        let cell = buf.cell((x, row)).expect("cell");
+        if cell.symbol() == " " {
+            continue;
+        }
+        if cell.style().bg == badge.bg {
+            marks += 1;
+            assert_eq!(cell.style().fg, badge.fg, "the badge at column {x} keeps the ink it brought");
+        } else {
+            words += 1;
+            assert_eq!(cell.style().fg, bar.fg, "the bar's own word at column {x} is one colour");
+            assert_eq!(cell.style().bg, bar.bg, "on the bar's own background");
+        }
+    }
+    assert!(marks > 0, "the LOADING badge is painted on the left of the bar");
+    assert!(words > 20, "and there are plenty of words beside it: {words}");
+    assert_eq!(bar.fg, Some(Color::Gray), "and those words are bright grey");
 }
 
 #[test]

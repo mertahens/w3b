@@ -72,6 +72,11 @@ pub struct StyleConfig {
     pub position: StyleSpec,
     pub scrollbar: StyleSpec,
     pub border: StyleSpec,
+    /// The ink of what floats over the page: the help and info panes and the `g`
+    /// menu. No `bg` means the terminal's own background shows through the frame.
+    pub pane: StyleSpec,
+    /// The frame around those panes, one step brighter than the page's own rules.
+    pub pane_border: StyleSpec,
     /// Image placeholders such as `[alt text]`.
     pub image: StyleSpec,
     /// An image placeholder inside a link.
@@ -228,6 +233,8 @@ impl Config {
             ("position", &self.style.position),
             ("scrollbar", &self.style.scrollbar),
             ("border", &self.style.border),
+            ("pane", &self.style.pane),
+            ("pane_border", &self.style.pane_border),
             ("disclosure", &self.style.disclosure),
         ];
         for (name, spec) in groups {

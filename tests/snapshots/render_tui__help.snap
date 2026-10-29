@@ -12,9 +12,9 @@ expression: screen
  │  o or :         open url        /           search     │
  │  n / N          next/prev hit   Esc         cancel     │
  │  [ or Backspace back            ]           forward    │
- │  v V drag       mark text       w           toggle wrap│
+ │  v V drag       mark text       v again     mark stays │
  │  y              what is marked, else link, else page   │
- │  g then ...     go-to menu                             │
+ │  g then ...     go-to menu      w           toggle wrap│
  │  in a field     typing edits it, Esc leaves it         │
  │  Enter there    sends the form, if it asks for a GET   │
  │  on a + or -    Enter shows or hides the lines under it│

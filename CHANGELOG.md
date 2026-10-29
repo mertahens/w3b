@@ -6,12 +6,52 @@ Unreleased is work on top of `ceb19b9` (the monospace slab).
 
 ## Unreleased
 
+### Bright grey ink for the browser's own words
+
+- The help pane (`?`), the page info pane (`i`) and the `g` menu no longer carry the
+  status bar's dark grey slab under their words. The inside of the box is empty and the
+  words sit on the terminal's own background, so a pane reads as a window cut into the
+  page rather than a bar pasted over it - and the words stay readable on a light terminal.
+- Their ink and their frame are bright grey, one step above the `dark_gray` rules drawn
+  inside a page, so the box stands off the page it covers. The keys of the `g` menu keep
+  the link colour; only the grey behind them went.
+- Two style keys own the look: `[style.pane]` for the words and `[style.pane_border]` for
+  the frame, both `fg = "gray"` with no `bg`. `[style.border]` stays the page's own - it
+  draws the rules in a table - so brightening a frame does not brighten every table on
+  every page. Put a `bg` in `[style.pane]` to have a slab back.
+- The status and prompt line writes its own words - the address or title, the mark
+  count, the message, the time and the figures on the right - in the same bright grey on
+  its dark bar. A badge is the other kind of thing on that bar: its ink and its
+  background only work as a pair, so the badges on the left (`200 OK`, `ERROR`, an exact
+  code) and the `-> url` hint are untouched. The `:` and `/` row is the same bar, so its
+  words brighten with it and it keeps a background, which there reads as the row itself
+  rather than as a stripe.
+
+### The second `v` leaves the mark on the page (#1)
+
+- `v` a second time finishes marking and keeps what was marked: the band stays where it
+  was, the status line keeps counting it, `y` still takes it, and the cursor is free
+  again and moves without it. The cells it covers are the cells it names, so nothing
+  about the mark follows the cursor while it stands.
+- The same key a third time picks the mark back up, its far end coming to wherever the
+  cursor has got to and the two travelling together once more. `v` and `V` still only
+  switch between characters and whole lines, so the other key of the pair cannot hide a
+  mark that has been left standing.
+- The keys a travelling mark holds back - `o`, `:`, `/`, `n`, `N`, `r`, `[`, `]`, `?`,
+  `i`, `Enter`, and the `g` commands that change the page - work while a mark stands,
+  and closing what they open gives the mark back: `Esc` out of a prompt, any key out of
+  a pane. A key that fetches a new page drops it, as it always has.
+- `Esc` drops a standing mark as well as a travelling one, which is how `y` gets back to
+  the link or page under the cursor.
+- The help pane says `v again  mark stays`, and the status line says it at the moment it
+  happens: `the mark stands: v picks it up, Esc drops it`.
+
 ### Dragging the mouse marks text, and `v` marks it without one (#6)
 
 - Dragging the left button across a page marks the text it passed over: a band of
   light in the new `[style.selection]`, and the status line counting it
   (`11 selected`) in place of the hover hint. Letting go somewhere other than where
-  the button went down leaves the mark standing, ready to be taken.
+  the button went down leaves the mark on the page, ready to be taken.
 - `y` takes what is marked: the text as it reads on screen, the lines the mark crossed
   joined, into the same OSC 52 clipboard request as everything else, with the note
   `yanked 11 characters`. A mark covering nothing says `the selection is blank` rather

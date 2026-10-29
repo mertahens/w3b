@@ -44,6 +44,11 @@ pub struct Theme {
     pub position: Style,
     pub scrollbar: Style,
     pub border: Style,
+    /// The words inside the panes that float over the page: help, page info, the
+    /// `g` menu. Carries no background unless the config gives it one.
+    pub pane: Style,
+    /// The frame around those panes.
+    pub pane_border: Style,
     pub image: Style,
     pub linked_image: Style,
     pub hovered_link: Style,
@@ -119,6 +124,8 @@ impl Theme {
             position: spec(&c.position, "position")?,
             scrollbar: spec(&c.scrollbar, "scrollbar")?,
             border: spec(&c.border, "border")?,
+            pane: spec(&c.pane, "pane")?,
+            pane_border: spec(&c.pane_border, "pane_border")?,
             image: spec(&c.image, "image")?,
             linked_image: spec(&c.linked_image, "linked_image")?,
             hovered_link: spec(&c.hovered_link, "hovered_link")?,

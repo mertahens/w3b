@@ -155,7 +155,7 @@ printed), `2` for a failed request or a bad config.
 | `r` | reload |
 | `Backspace` or `[` | back in history |
 | `]` | forward in history |
-| `v` `V` | mark text: `v` marks from the cursor and the far end moves with the cursor keys, `w` `b` `e`, `0` `$`, `j` `k` and the page keys, `V` takes whole lines, `Esc` drops the mark. Dragging the left button marks too. The status line counts the mark (`11 selected`) and `y` takes it |
+| `v` `V` | mark text: `v` marks from the cursor and the far end moves with the cursor keys, `w` `b` `e`, `0` `$`, `j` `k` and the page keys, `V` takes whole lines, `Esc` drops the mark. The same key again leaves the mark standing on the page - the band stays, the status line keeps counting it, `y` still takes it and the cursor is free - and the same key once more picks it up. Dragging the left button marks too. The status line counts the mark (`11 selected`) and `y` takes it |
 | `y` | yank: what is marked, else the link under the cursor, else the address of the image or clip under it, else the page url. A label written inside a link yanks the link. The text goes to the terminal clipboard (OSC 52, `yank_to_clipboard`) and a `yanked: ...` note is shown |
 | `w` | toggle line wrapping |
 | `?` | key help |
@@ -208,11 +208,25 @@ end the button went down on stays where it was while the window scrolls, so the 
 moves the far end and not the mark, and walking the cursor past that end is not a
 special case: the two ends swap. `V` takes whole lines, `v` and `V` switch between
 the two, and `Esc` drops the mark and leaves the cursor where it stopped. While a
-mark is open the keys that would leave the page - `o`, `:`, `/`, `n`, `N`, `r`, `[`,
-`]`, `?`, `i`, `Enter` - do nothing, so a mis-hit cannot lose it; `g g` and `g e`
-still stretch it to the top or the bottom of the page. A mark belongs to the text it
-was made in, so a new page, a resize, `w`, opening a `<details>` or moving into a
-field drops it: the lines it names are no longer those lines.
+mark travels with the cursor the keys that would leave the page - `o`, `:`, `/`, `n`,
+`N`, `r`, `[`, `]`, `?`, `i`, `Enter` - do nothing, so a mis-hit cannot lose it; `g g`
+and `g e` still stretch it to the top or the bottom of the page. A mark belongs to the
+text it was made in, so a new page, a resize, `w`, opening a `<details>` or moving into
+a field drops it: the lines it names are no longer those lines.
+
+`v` a second time finishes marking without losing anything: the mark stays on the page
+where it was, painted and counted in the status line, and the cursor is free again and
+moves without it. `y` still takes the mark and not whatever the cursor has stopped on,
+and the cells it covers are the cells it names - nothing about it follows the cursor
+while it stands. The keys the mark held back work again, and closing what they open
+gives the mark back: `Esc` out of a prompt, any key out of a pane. A key that fetches
+a new page drops it, as it always has.
+
+The same key a third time picks the mark back up: its far end comes to wherever the
+cursor has got to and the two travel together once more. The other key of the pair
+only ever switches between characters and whole lines, so it cannot hide a mark that
+has been left standing. `Esc` is the key that asks for nothing: it drops the mark,
+standing or travelling, and `y` goes back to the link or page under the cursor.
 
 ## Configuration
 
@@ -254,10 +268,12 @@ cursor = { bg = "yellow", fg = "black", bold = true }
 cursor_line = { bg = "#2b2b3b" }
 search_match = { bg = "gray", fg = "black" }
 selection = { bg = "light_gray", fg = "black"}
+pane = { fg = "gray" }            # words inside the panes and menus that float over the page
+pane_border = { fg = "gray" }     # their frame, a step brighter than a table rule
 prompt, message, url, title, position, scrollbar, border
 
 [style.status]                # the status bar itself
-fg = "black"
+fg = "gray"                   # its own words: address, count, message, figures
 bg = "dark_gray"
 [style.status.loading]        # while fetching
 fg = "black"
